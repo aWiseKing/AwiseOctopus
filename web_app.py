@@ -9,10 +9,10 @@ from models import ThinkingAgent
 # -----------------
 # 页面配置与样式
 # -----------------
-st.set_page_config(page_title="Awise Agent", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="AwiseOctopus", page_icon="🤖", layout="wide")
 
-st.title("🤖 Awise Agent")
-st.markdown("双 Agent 架构测试系统（Streamlit Web 版）")
+st.title("🤖 AwiseOctopus")
+st.markdown("hello world")
 
 # -----------------
 # 客户端初始化
@@ -24,6 +24,7 @@ def get_openai_client():
     base_url = os.getenv("base_url")
     if not api_key:
         st.error("请在 .env 文件中配置 api_key")
+        
         st.stop()
     return OpenAI(api_key=api_key, base_url=base_url), os.getenv("MODEL", "gpt-4o")
 
