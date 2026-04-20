@@ -55,3 +55,8 @@ class ExecutionAgent:
                 print(log_msg)
         except StopIteration as e:
             return e.value
+
+    async def async_run(self, instruction):
+        """异步执行封装，通过 asyncio.to_thread 在线程池中执行同步的 run_stream"""
+        import asyncio
+        return await asyncio.to_thread(self.run, instruction)

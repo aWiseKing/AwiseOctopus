@@ -1,10 +1,12 @@
 import os
+import asyncio
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
-# 从我们重构后的models包导入思考Agent
-from models import ThinkingAgent
+# 从我们重构后的models包导入思考Agent和DAGExecutor
+from models import ThinkingAgent, DAGExecutor
 
 # -----------------
 # 客户端初始化
@@ -37,8 +39,16 @@ if __name__ == "__main__":
             
             manager = ThinkingAgent(client, MODEL)
             final_response = manager.run(prompt)
-            # 使用 encode/decode 避免终端打印生僻字符时报错
-            print(f"\n✅ 最终答案：\n{final_response.encode('gbk', 'replace').decode('gbk')}\n")
+            
+            if isinstance(final_response, list):
+                print("\n[系统] 接收到 DAG 任务图，开始调度执行...")
+                executor = DAGExecutor(final_response, client, MODEL, manager)
+                results = asyncio.run(executor.execute())
+                print(f"\n✅ DAG 最终执行结果：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
+            else:
+                # 使用 encode/decode 避免终端打印生僻字符时报错
+                print(f"\n✅ 最终答案：\n{final_response.encode('gbk', 'replace').decode('gbk')}\n")
+            
             print("------------------------------------------")
             
         except KeyboardInterrupt:
