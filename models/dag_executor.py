@@ -4,10 +4,11 @@ from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 from .execution_agent import ExecutionAgent
 
 class DAGExecutor:
-    def __init__(self, tasks, client, model, thinking_agent):
+    def __init__(self, tasks, client, model, thinking_agent, on_status_change=None):
         self.client = client
         self.model = model
         self.thinking_agent = thinking_agent
+        self.on_status_change = on_status_change
         
         # 记录所有的任务对象 {task_id: task_dict}
         self.all_tasks = {t['id']: t for t in tasks}
@@ -31,6 +32,16 @@ class DAGExecutor:
     def _get_pending_tasks_list(self):
         """获取当前还未执行完毕的任务列表（用于传递给思考Agent）"""
         return [self.all_tasks[t] for t in self.pending_task_ids]
+
+    def _notify_status(self):
+        """触发状态更新回调"""
+        if self.on_status_change:
+            self.on_status_change({
+                "pending": list(self.pending_task_ids),
+                "running": list(self.running_task_ids),
+                "completed": list(self.completed_task_ids),
+                "tasks": self.all_tasks
+            })
 
     async def _execute_task_wrapper(self, task_id, instruction):
         """包装 ExecutionAgent 的执行，以便作为 apscheduler 的 job 运行"""
@@ -64,6 +75,9 @@ class DAGExecutor:
                 kwargs={"task_id": task_id, "instruction": task["instruction"]},
                 id=task_id
             )
+            
+        if ready_tasks:
+            self._notify_status()
 
     async def _handle_review(self, completed_task_id, result):
         """异步处理任务复盘逻辑"""
@@ -91,6 +105,8 @@ class DAGExecutor:
             for task in new_dag:
                 self.all_tasks[task['id']] = task
                 self.pending_task_ids.add(task['id'])
+            
+            self._notify_status()
         else:
             print(f"\n[DAG 执行器] 思考Agent 决定维持原计划。")
             
@@ -125,6 +141,8 @@ class DAGExecutor:
             self.pending_task_ids.remove(task_id)
         self.completed_task_ids.add(task_id)
         
+        self._notify_status()
+        
         task_info = self.all_tasks.get(task_id, {})
         requires_review = task_info.get("requires_review", False)
         
@@ -143,6 +161,8 @@ class DAGExecutor:
         print("\n=== [DAG 执行器] 开始动态执行任务图 ===")
         self.scheduler.add_listener(self._job_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
         self.scheduler.start()
+        
+        self._notify_status()
         
         if not self.pending_task_ids:
             return self.task_results

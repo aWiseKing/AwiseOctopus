@@ -44,7 +44,12 @@ if __name__ == "__main__":
                 print("\n[系统] 接收到 DAG 任务图，开始调度执行...")
                 executor = DAGExecutor(final_response, client, MODEL, manager)
                 results = asyncio.run(executor.execute())
-                print(f"\n✅ DAG 最终执行结果：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
+                print(f"\n✅ DAG 最终执行结果（JSON）：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
+                
+                print("\n[系统] 正在生成最终总结报告...\n")
+                for chunk in manager.summarize_dag_results_stream(prompt, results):
+                    print(chunk, end="", flush=True)
+                print("\n")
             else:
                 # 使用 encode/decode 避免终端打印生僻字符时报错
                 print(f"\n✅ 最终答案：\n{final_response.encode('gbk', 'replace').decode('gbk')}\n")

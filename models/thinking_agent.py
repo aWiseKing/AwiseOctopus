@@ -407,3 +407,21 @@ class ThinkingAgent:
         )
         print(f"\n[DAG 执行器] 请求思考Agent复盘任务 {completed_task_id}...")
         return self.run(review_instruction)
+
+    def summarize_dag_results_stream(self, user_request, dag_results):
+        """流式生成最终的 DAG 执行结果总结"""
+        system_prompt = "你是一个智能总结助手。请根据用户的原始请求和各个子任务的执行结果，撰写一份连贯、排版良好且易读的最终总结报告。"
+        content = f"用户的原始请求：\n{user_request}\n\n各个子任务的执行结果（JSON格式）：\n{json.dumps(dag_results, ensure_ascii=False, indent=2)}\n\n请提供最终的总结报告："
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content}
+        ]
+        
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            stream=True
+        )
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
