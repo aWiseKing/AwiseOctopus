@@ -65,7 +65,7 @@ for msg in st.session_state.messages:
 # -----------------
 # 聊天输入与逻辑处理
 # -----------------
-if prompt := st.chat_input("请输入问题或回复 Agent 的求助..."):
+if prompt := st.chat_input("Please enter a question or reply to the agent's request for assistance ..."):
     # 展示用户输入
     with st.chat_message("user"):
         st.markdown(prompt)
