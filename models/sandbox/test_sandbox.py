@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from models.sandbox.openai_sandbox import OpenAISandbox
 from models.sandbox.local_sandbox import LocalSandbox
+from models.sandbox.true_local_sandbox import TrueLocalSandbox
 
 def run_tests(sandbox):
     print(f"--- Running tests for Sandbox: {sandbox.__class__.__name__} ---")
@@ -43,6 +44,14 @@ def run_tests(sandbox):
 def main():
     print("Initializing Sandboxes...\n")
     
+    # ---------------- 测试 TrueLocalSandbox ----------------
+    try:
+        with TrueLocalSandbox() as true_local_sandbox:
+            print(f"TrueLocalSandbox initialized successfully with model: {true_local_sandbox.model}\n")
+            run_tests(true_local_sandbox)
+    except Exception as e:
+        print(f"TrueLocalSandbox test failed: {e}")
+
     # ---------------- 测试 LocalSandbox ----------------
     try:
         with LocalSandbox() as local_sandbox:
