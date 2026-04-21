@@ -2,6 +2,7 @@ import json
 import os
 import jsonschema
 from .execution_agent import ExecutionAgent
+from .tools import registry
 
 def _validate_dag_tasks(tasks, schema):
     """
@@ -51,6 +52,16 @@ def _validate_dag_tasks(tasks, schema):
         if visited[tid] == 0:
             if has_cycle(tid):
                 return False, f"Logical error: Circular dependency detected involving task '{tid}'."
+
+    # 5. 逻辑校验：类型校验
+    for t in tasks:
+        t_type = t.get('type', 'agent')
+        if t_type == 'tool':
+            if 'tool' not in t or 'input' not in t:
+                return False, f"Logical error: Task '{t['id']}' with type 'tool' must have 'tool' and 'input' fields."
+        else:
+            if 'instruction' not in t:
+                return False, f"Logical error: Task '{t['id']}' with type 'agent' must have 'instruction' field."
 
     return True, None
 
@@ -139,6 +150,8 @@ class ThinkingAgent:
     def __init__(self, client, model):
         self.client = client
         self.model = model
+        
+        execution_tools_info = json.dumps(registry.schemas, ensure_ascii=False)
         self.system_prompt = (
             "你是一个思考Agent（Manager）。你的任务是拆解用户的复杂请求，进行必要的信息收集，并最终规划出一个基于DAG（有向无环图）的任务执行计划。\n"
             "【阶段一：信息收集与探索】\n"
@@ -153,12 +166,16 @@ class ThinkingAgent:
             "如果各种方法都尝试失败，或者你对如何规划有严重疑虑时，请**使用 `ask_user_for_help` 工具向用户提问**。特别地，对于**模糊不清的需求目标等信息**，你必须**整理出可能的方向后由用户选择**，切勿自行猜测。\n"
             "\n【阶段二：输出DAG任务执行图】\n"
             "当你的思考和信息收集完成，并明确了所有需要执行的步骤后，必须使用 `create_task` 工具输出整个DAG任务执行图。\n"
-            "在DAG图中，你需要为每个任务分配唯一的 `id`、具体的执行 `instruction`（给执行Agent看），以及该任务所依赖的前置任务 `dependencies`（id列表）。\n"
-            "**【动态DAG调整（复盘机制）】**\n"
+            "在DAG图中，你需要将任务进行**细致的拆分**，支持两种任务节点类型：\n"
+            "  1. `type='tool'`：直接调用特定的执行工具。必须指定 `tool`（工具名称）和 `input`（工具参数）。\n"
+            "  2. `type='agent'`：将复杂的模糊指令委派给执行Agent处理。必须指定 `instruction`。\n"
+            "请优先将明确的操作拆分为 `type='tool'` 节点。当前可直接调用的执行工具（用于 type='tool'）如下：\n"
+            f"{execution_tools_info}\n"
+            "\n**【动态DAG调整（复盘机制）】**\n"
             "如果你觉得某个任务执行后可能需要根据它的结果来决定后续任务如何进行，请将该任务的 `requires_review` 设为 true。DAG 引擎在执行完该任务后会暂停，并将结果返回给你重新规划。\n"
             "调用 `create_task` 意味着你的思考阶段结束，DAG任务图将交给执行引擎去并行或顺序执行。\n"
             "如果你认为用户的请求只是一个简单的问题解答，不需要规划DAG任务图，你可以直接使用 `finish_task` 工具返回最终答案。\n"
-            "千万不要自己去猜事实或做计算，必须依靠执行Agent去完成实际操作！"
+            "千万不要自己去猜事实或做计算，必须依靠执行引擎去完成实际操作！"
         )
         self.thinking_tools_schema = [
             {
@@ -207,9 +224,22 @@ class ThinkingAgent:
                                             "type": "string",
                                             "description": "任务的唯一标识符，例如 'task_1'"
                                         },
+                                        "type": {
+                                            "type": "string",
+                                            "enum": ["tool", "agent"],
+                                            "description": "任务类型。'tool'表示直接调用具体的工具，'agent'表示委派给执行Agent处理复杂逻辑"
+                                        },
+                                        "tool": {
+                                            "type": "string",
+                                            "description": "如果type为'tool'，指定要调用的工具名称"
+                                        },
+                                        "input": {
+                                            "type": "object",
+                                            "description": "如果type为'tool'，指定工具的输入参数"
+                                        },
                                         "instruction": {
                                             "type": "string",
-                                            "description": "该任务的具体执行指令，给执行Agent看"
+                                            "description": "如果type为'agent'，给出执行指令，给执行Agent看"
                                         },
                                         "dependencies": {
                                             "type": "array",
@@ -221,7 +251,7 @@ class ThinkingAgent:
                                             "description": "是否需要在该任务完成后暂停执行，并将结果交由你进行复盘以决定是否调整后续DAG任务。如果其结果可能改变后续走向，设为true。"
                                         }
                                     },
-                                    "required": ["id", "instruction", "dependencies"]
+                                    "required": ["id", "type", "dependencies"]
                                 }
                             }
                         },

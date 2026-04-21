@@ -44,11 +44,34 @@ class DAGExecutor:
                 "tasks": self.all_tasks
             })
 
-    async def _execute_task_wrapper(self, task_id, instruction):
-        """包装 ExecutionAgent 的执行，以便作为 apscheduler 的 job 运行"""
-        worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
-        print(f"\n[DAG 执行器] 开始执行任务: {task_id}")
-        result = await worker.async_run(instruction)
+    async def _execute_task_wrapper(self, task_id, task_data):
+        """包装 ExecutionAgent 或直接工具的执行，以便作为 apscheduler 的 job 运行"""
+        task_type = task_data.get('type', 'agent')
+        print(f"\n[DAG 执行器] 开始执行任务: {task_id} (类型: {task_type})")
+        
+        if task_type == 'tool':
+            from .tools import registry
+            tool_name = task_data.get('tool')
+            tool_args = task_data.get('input', {})
+            
+            skill_info = registry.get_skill_info(tool_name)
+            if skill_info and skill_info.get("requires_confirmation"):
+                if self.interaction_handler:
+                    print(f"\n[DAG 执行器] 等待用户确认高危操作 {tool_name}...")
+                    user_reply = await asyncio.to_thread(self.interaction_handler, tool_name, tool_args)
+                    if str(user_reply).strip().lower() in ['y', 'yes', '允许', 'ok']:
+                        result = await asyncio.to_thread(registry.execute, tool_name, tool_args)
+                    else:
+                        result = f"用户拒绝了该操作，用户的建议/原因是: {user_reply}"
+                else:
+                    print(f"\n[DAG 执行器] 警告: 高危操作 {tool_name} 需要确认，但未配置交互机制，拒绝执行。")
+                    result = "操作被拒绝：未配置用户确认交互机制。"
+            else:
+                result = await asyncio.to_thread(registry.execute, tool_name, tool_args)
+        else:
+            worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
+            result = await worker.async_run(task_data.get('instruction', ''))
+            
         return {"task_id": task_id, "result": result}
 
     def _schedule_ready_tasks(self):
@@ -73,7 +96,7 @@ class DAGExecutor:
             # 添加 job
             self.scheduler.add_job(
                 self._execute_task_wrapper,
-                kwargs={"task_id": task_id, "instruction": task["instruction"]},
+                kwargs={"task_id": task_id, "task_data": task},
                 id=task_id
             )
             
