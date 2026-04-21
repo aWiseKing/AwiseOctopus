@@ -2,16 +2,24 @@ import json
 from .tools import registry
 
 class ExecutionAgent:
-    def __init__(self, client, model, interaction_handler=None):
+    def __init__(self, client, model, interaction_handler=None, allow_tools=True):
         self.client = client
         self.model = model
         self.interaction_handler = interaction_handler
-        self.system_prompt = (
-            "你是一个执行Agent（Worker）。你的任务是利用手头的技能工具，精准地完成思考Agent交给你的具体任务指令。\n"
-            "遇到问题时，请自行分析并再次尝试。一旦你完成了任务，请直接用普通文本回答最终结果，不要返回额外的内容。\n"
-            "如果没有合适的工具，你可以直接回答；如果有合适的工具，请务必使用工具。\n"
-            "【特别注意】在执行直接操作宿主机PC的危险操作（如读写本地文件、修改系统设置）前，你必须先使用沙箱环境运行包含虚拟数据的测试代码，验证你的逻辑和语法。测试无误后，再执行真实的宿主机操作。"
-        )
+        self.allow_tools = allow_tools
+        if self.allow_tools:
+            self.system_prompt = (
+                "你是一个执行Agent（Worker）。你的任务是利用手头的技能工具，精准地完成思考Agent交给你的具体任务指令。\n"
+                "遇到问题时，请自行分析并再次尝试。一旦你完成了任务，请直接用普通文本回答最终结果，不要返回额外的内容。\n"
+                "如果没有合适的工具，你可以直接回答；如果有合适的工具，请务必使用工具。\n"
+                "【特别注意】在执行直接操作宿主机PC的危险操作（如读写本地文件、修改系统设置）前，你必须先使用沙箱环境运行包含虚拟数据的测试代码，验证你的逻辑和语法。测试无误后，再执行真实的宿主机操作。"
+            )
+        else:
+            self.system_prompt = (
+                "你是一个执行Agent（Worker）。你的任务是根据指令产出纯文本结果。\n"
+                "【硬性限制】本次任务不允许调用任何工具（包括本地文件、网络、代码执行等）。\n"
+                "请只返回最终文本结果，不要输出额外内容。"
+            )
 
     def run_stream(self, instruction):
         yield f"  >>> [执行Agent 启动] 接收到子任务: {instruction}"
@@ -24,12 +32,16 @@ class ExecutionAgent:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                tools=registry.schemas if registry.schemas else None
+                tools=registry.schemas if (self.allow_tools and registry.schemas) else None
             )
             msg = response.choices[0].message
             messages.append(msg)
             
             if msg.tool_calls:
+                if not self.allow_tools:
+                    final_result = "本次任务不允许调用工具。请将该任务拆分为 tool 节点后重试。"
+                    yield f"  <<< [执行Agent 完成] 结果反馈: {final_result}"
+                    return final_result
                 for tool_call in msg.tool_calls:
                     name = tool_call.function.name
                     args = json.loads(tool_call.function.arguments)

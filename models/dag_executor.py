@@ -1,15 +1,18 @@
 import asyncio
+import json
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 from .execution_agent import ExecutionAgent
+from .memory import ExperienceMemoryManager
 
 class DAGExecutor:
-    def __init__(self, tasks, client, model, thinking_agent, on_status_change=None, interaction_handler=None):
+    def __init__(self, tasks, client, model, thinking_agent, on_status_change=None, interaction_handler=None, user_request=None):
         self.client = client
         self.model = model
         self.thinking_agent = thinking_agent
         self.on_status_change = on_status_change
         self.interaction_handler = interaction_handler
+        self.user_request = user_request
         
         # 记录所有的任务对象 {task_id: task_dict}
         self.all_tasks = {t['id']: t for t in tasks}
@@ -29,6 +32,26 @@ class DAGExecutor:
         
         # 用于等待所有任务完成的事件
         self.all_done_event = asyncio.Event()
+        try:
+            self.memory = ExperienceMemoryManager.get_singleton(client=self.client, model=self.model)
+        except Exception:
+            self.memory = None
+
+    def _is_failure_text(self, text: str) -> bool:
+        t = str(text or "")
+        markers = [
+            "Error:",
+            "执行技能",
+            "发生异常",
+            "操作被拒绝",
+            "未配置用户确认交互机制",
+            "Traceback (most recent call last)",
+        ]
+        if any(m in t for m in markers):
+            if "成功" in t and "失败" not in t:
+                return False
+            return True
+        return False
 
     def _get_pending_tasks_list(self):
         """获取当前还未执行完毕的任务列表（用于传递给思考Agent）"""
@@ -47,7 +70,9 @@ class DAGExecutor:
     async def _execute_task_wrapper(self, task_id, task_data):
         """包装 ExecutionAgent 或直接工具的执行，以便作为 apscheduler 的 job 运行"""
         task_type = task_data.get('type', 'agent')
-        print(f"\n[DAG 执行器] 开始执行任务: {task_id} (类型: {task_type})")
+        title = task_data.get("title", "")
+        title_part = f" - {title}" if title else ""
+        print(f"\n[DAG 执行器] 开始执行任务: {task_id}{title_part} (类型: {task_type})")
         
         if task_type == 'tool':
             from .tools import registry
@@ -69,7 +94,7 @@ class DAGExecutor:
             else:
                 result = await asyncio.to_thread(registry.execute, tool_name, tool_args)
         else:
-            worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
+            worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler, allow_tools=False)
             result = await worker.async_run(task_data.get('instruction', ''))
             
         return {"task_id": task_id, "result": result}
@@ -157,6 +182,27 @@ class DAGExecutor:
             
         print(f"\n[DAG 执行器] 任务 {task_id} 执行完毕。")
         self.task_results[task_id] = result
+
+        task_info = self.all_tasks.get(task_id, {})
+        requires_review = task_info.get("requires_review", False)
+        if self.memory and getattr(self.memory, "enabled", False):
+            success = not self._is_failure_text(result)
+            meta = {
+                "task_id": task_id,
+                "title": task_info.get("title", ""),
+                "type": task_info.get("type", ""),
+                "tool": task_info.get("tool", ""),
+                "requires_review": bool(requires_review),
+            }
+            try:
+                asyncio.get_event_loop().create_task(
+                    asyncio.to_thread(self.memory.record_dag_task, task_info, result, success, meta)
+                )
+            except Exception:
+                try:
+                    self.memory.record_dag_task(task_info, result, success, meta)
+                except Exception:
+                    pass
         
         # 更新状态集合
         if task_id in self.running_task_ids:
@@ -166,9 +212,6 @@ class DAGExecutor:
         self.completed_task_ids.add(task_id)
         
         self._notify_status()
-        
-        task_info = self.all_tasks.get(task_id, {})
-        requires_review = task_info.get("requires_review", False)
         
         if requires_review:
             # 启动异步任务进行 review
@@ -198,4 +241,21 @@ class DAGExecutor:
         
         self.scheduler.shutdown()
         print("\n=== [DAG 执行器] 所有任务执行完毕 ===")
+        if self.memory and getattr(self.memory, "enabled", False) and self.user_request:
+            results_text = json.dumps(self.task_results, ensure_ascii=False, indent=2)
+            overall_success = True
+            for r in self.task_results.values():
+                if self._is_failure_text(r):
+                    overall_success = False
+                    break
+            try:
+                await asyncio.to_thread(
+                    self.memory.record_user_request,
+                    self.user_request,
+                    results_text,
+                    overall_success,
+                    {"source": "dag_executor"},
+                )
+            except Exception:
+                pass
         return self.task_results

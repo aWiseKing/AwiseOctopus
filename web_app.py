@@ -148,7 +148,7 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                         import json
                         import asyncio
                         import threading
-                        from models import DAGExecutor
+                        from models import DAGExecutor, ExperienceMemoryManager
                         
                         status_container.info("**任务规划完成，开始调度执行 DAG 图...**")
                         
@@ -182,7 +182,15 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                             finally:
                                 app_session.dag_running = False
 
-                        executor = DAGExecutor(payload, client, MODEL, agent, on_status_change=update_dag, interaction_handler=web_interaction_handler)
+                        executor = DAGExecutor(
+                            payload,
+                            client,
+                            MODEL,
+                            agent,
+                            on_status_change=update_dag,
+                            interaction_handler=web_interaction_handler,
+                            user_request=prompt,
+                        )
                         t = threading.Thread(target=run_dag_thread, args=(executor, st.session_state))
                         t.daemon = True
                         t.start()
@@ -193,6 +201,16 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                     else:
                         status_container.success(f"**最终答案:**\n\n{payload}")
                         st.session_state.messages.append({"role": "assistant", "type": "final", "content": payload})
+                        try:
+                            mem = ExperienceMemoryManager.get_singleton(client=client, model=MODEL)
+                            if getattr(mem, "enabled", False):
+                                threading.Thread(
+                                    target=mem.record_user_request,
+                                    args=(prompt, payload, True, {"source": "web"}),
+                                    daemon=True,
+                                ).start()
+                        except Exception:
+                            pass
                         st.session_state.agent_gen = None
                         break
                     
@@ -216,8 +234,15 @@ if st.session_state.dag_running or st.session_state.dag_results is not None:
                 color = "yellow"
             else:
                 color = "lightgrey"
-            instruction_preview = t.get('instruction', '').replace('"', '\\"')[:20]
-            label = f"{tid}\\n{instruction_preview}..."
+            t_type = t.get("type", "agent")
+            title_preview = (t.get("title") or "").replace('"', '\\"').strip()[:30]
+            if title_preview:
+                preview = title_preview
+            elif t_type == "tool":
+                preview = (t.get("tool") or "tool").replace('"', '\\"')[:30]
+            else:
+                preview = (t.get("instruction") or "").replace('"', '\\"')[:30]
+            label = f"{tid}\\n[{t_type}]\\n{preview}"
             dot += f'  "{tid}" [fillcolor={color}, label="{label}"];\n'
         
         for tid, t in status_data["tasks"].items():
@@ -270,8 +295,15 @@ if st.session_state.dag_running or st.session_state.dag_results is not None:
                     color = "yellow"
                 else:
                     color = "lightgrey"
-                instruction_preview = t.get('instruction', '').replace('"', '\\"')[:20]
-                label = f"{tid}\\n{instruction_preview}..."
+                t_type = t.get("type", "agent")
+                title_preview = (t.get("title") or "").replace('"', '\\"').strip()[:30]
+                if title_preview:
+                    preview = title_preview
+                elif t_type == "tool":
+                    preview = (t.get("tool") or "tool").replace('"', '\\"')[:30]
+                else:
+                    preview = (t.get("instruction") or "").replace('"', '\\"')[:30]
+                label = f"{tid}\\n[{t_type}]\\n{preview}"
                 dot_str += f'  "{tid}" [fillcolor={color}, label="{label}"];\n'
             for tid, t in status_data["tasks"].items():
                 for dep in t.get("dependencies", []):

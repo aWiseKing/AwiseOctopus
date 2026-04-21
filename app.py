@@ -1,12 +1,13 @@
 import os
 import asyncio
 import json
+import threading
 from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
 # 从我们重构后的models包导入思考Agent和DAGExecutor
-from models import ThinkingAgent, DAGExecutor
+from models import ThinkingAgent, DAGExecutor, ExperienceMemoryManager
 
 # -----------------
 # 客户端初始化
@@ -51,7 +52,14 @@ if __name__ == "__main__":
             
             if isinstance(final_response, list):
                 print("\n[系统] 接收到 DAG 任务图，开始调度执行...")
-                executor = DAGExecutor(final_response, client, MODEL, manager, interaction_handler=cli_interaction_handler)
+                executor = DAGExecutor(
+                    final_response,
+                    client,
+                    MODEL,
+                    manager,
+                    interaction_handler=cli_interaction_handler,
+                    user_request=prompt,
+                )
                 results = asyncio.run(executor.execute())
                 print(f"\n✅ DAG 最终执行结果（JSON）：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
                 
@@ -62,6 +70,16 @@ if __name__ == "__main__":
             else:
                 # 使用 encode/decode 避免终端打印生僻字符时报错
                 print(f"\n✅ 最终答案：\n{final_response.encode('gbk', 'replace').decode('gbk')}\n")
+                try:
+                    mem = ExperienceMemoryManager.get_singleton(client=client, model=MODEL)
+                    if getattr(mem, "enabled", False):
+                        threading.Thread(
+                            target=mem.record_user_request,
+                            args=(prompt, final_response, True, {"source": "cli"}),
+                            daemon=True,
+                        ).start()
+                except Exception:
+                    pass
             
             print("------------------------------------------")
             

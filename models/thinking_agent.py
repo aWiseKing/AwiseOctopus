@@ -1,8 +1,10 @@
 import json
 import os
+import re
 import jsonschema
 from .execution_agent import ExecutionAgent
 from .tools import registry
+from .memory import ExperienceMemoryManager
 
 def _validate_dag_tasks(tasks, schema):
     """
@@ -53,15 +55,42 @@ def _validate_dag_tasks(tasks, schema):
             if has_cycle(tid):
                 return False, f"Logical error: Circular dependency detected involving task '{tid}'."
 
-    # 5. 逻辑校验：类型校验
+    def _looks_multi_step(text):
+        if not text:
+            return False
+        text = str(text).strip()
+        tokens = [
+            "先", "再", "然后", "并且", "同时", "接着", "最后", "分别", "依次",
+            "步骤", "step", "1.", "2.", "3.", "①", "②", "③", "一、", "二、", "三、"
+        ]
+        if any(tok in text for tok in tokens):
+            return True
+        if re.search(r"(?m)^\s*\d+[\.\)]\s+", text):
+            return True
+        if re.search(r"(?m)^\s*[-*]\s+", text) and ("并" in text or "然后" in text):
+            return True
+        return False
+
     for t in tasks:
-        t_type = t.get('type', 'agent')
-        if t_type == 'tool':
-            if 'tool' not in t or 'input' not in t:
-                return False, f"Logical error: Task '{t['id']}' with type 'tool' must have 'tool' and 'input' fields."
-        else:
-            if 'instruction' not in t:
-                return False, f"Logical error: Task '{t['id']}' with type 'agent' must have 'instruction' field."
+        tid = t.get("id", "")
+        title = t.get("title", "")
+        if not isinstance(title, str) or not title.strip():
+            return False, f"Atomicity error: Task '{tid}' must have a non-empty 'title'."
+        if len(title.strip()) > 80:
+            return False, f"Atomicity error: Task '{tid}' title is too long. Keep it short."
+        t_type = t.get("type")
+        if t_type == "agent":
+            instruction = t.get("instruction", "")
+            if not isinstance(instruction, str) or not instruction.strip():
+                return False, f"Atomicity error: Task '{tid}' must have a non-empty 'instruction'."
+            if len(instruction.strip()) > 400:
+                return False, f"Atomicity error: Task '{tid}' instruction is too long. Split into multiple atomic tasks."
+            if _looks_multi_step(instruction):
+                return False, f"Atomicity error: Task '{tid}' instruction looks multi-step. Split it into multiple tasks and connect via dependencies."
+        elif t_type == "tool":
+            expected_output = t.get("expected_output")
+            if expected_output is not None and isinstance(expected_output, str) and _looks_multi_step(expected_output):
+                return False, f"Atomicity error: Task '{tid}' expected_output looks multi-step. Keep one task = one output."
 
     return True, None
 
@@ -166,9 +195,15 @@ class ThinkingAgent:
             "如果各种方法都尝试失败，或者你对如何规划有严重疑虑时，请**使用 `ask_user_for_help` 工具向用户提问**。特别地，对于**模糊不清的需求目标等信息**，你必须**整理出可能的方向后由用户选择**，切勿自行猜测。\n"
             "\n【阶段二：输出DAG任务执行图】\n"
             "当你的思考和信息收集完成，并明确了所有需要执行的步骤后，必须使用 `create_task` 工具输出整个DAG任务执行图。\n"
-            "在DAG图中，你需要将任务进行**细致的拆分**，支持两种任务节点类型：\n"
+            "在DAG图中，你需要将任务进行**细致的拆分**，并严格遵守下列硬规则。\n"
+            "\n【DAG 节点原子性硬规则】\n"
+            "1) 一个 task = 一个原子动作。禁止在一个 task 里写“先…再…”“然后…”“并且…”等多步骤流程。\n"
+            "2) 所有外部操作（读文件/搜本地/联网/运行代码/计算等）必须用 `type='tool'` 节点表达，并且一个 tool 节点只调用一次工具。\n"
+            "3) `type='agent'` 节点只允许纯文本产出（总结/决策/生成单份文档/给出结论）。不要在 agent 节点里使用任何工具。\n"
+            "4) 每个任务必须填写 `title`（简短标题），可选填写 `expected_output`（该节点产物/验收点）。\n"
+            "\n【任务类型说明】\n"
             "  1. `type='tool'`：直接调用特定的执行工具。必须指定 `tool`（工具名称）和 `input`（工具参数）。\n"
-            "  2. `type='agent'`：将复杂的模糊指令委派给执行Agent处理。必须指定 `instruction`。\n"
+            "  2. `type='agent'`：只做纯文本产出。必须指定 `instruction`。\n"
             "请优先将明确的操作拆分为 `type='tool'` 节点。当前可直接调用的执行工具（用于 type='tool'）如下：\n"
             f"{execution_tools_info}\n"
             "\n**【动态DAG调整（复盘机制）】**\n"
@@ -216,42 +251,39 @@ class ThinkingAgent:
                         "properties": {
                             "tasks": {
                                 "type": "array",
-                                "description": "DAG任务列表，每个任务包含id、指令和依赖项。",
+                                "description": "DAG任务列表。一个task必须是一个原子动作（一次工具调用或一次纯文本产出）。",
                                 "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": {
-                                            "type": "string",
-                                            "description": "任务的唯一标识符，例如 'task_1'"
-                                        },
-                                        "type": {
-                                            "type": "string",
-                                            "enum": ["tool", "agent"],
-                                            "description": "任务类型。'tool'表示直接调用具体的工具，'agent'表示委派给执行Agent处理复杂逻辑"
-                                        },
-                                        "tool": {
-                                            "type": "string",
-                                            "description": "如果type为'tool'，指定要调用的工具名称"
-                                        },
-                                        "input": {
+                                    "oneOf": [
+                                        {
                                             "type": "object",
-                                            "description": "如果type为'tool'，指定工具的输入参数"
+                                            "additionalProperties": False,
+                                            "properties": {
+                                                "id": {"type": "string", "description": "任务唯一标识符，例如 't_read_1'"},
+                                                "title": {"type": "string", "description": "简短标题，用于展示与日志"},
+                                                "type": {"type": "string", "enum": ["tool"]},
+                                                "tool": {"type": "string", "description": "要调用的工具名称"},
+                                                "input": {"type": "object", "description": "工具输入参数"},
+                                                "expected_output": {"type": "string", "description": "该节点产物/验收点（可选）"},
+                                                "dependencies": {"type": "array", "items": {"type": "string"}},
+                                                "requires_review": {"type": "boolean"}
+                                            },
+                                            "required": ["id", "title", "type", "tool", "input", "dependencies"]
                                         },
-                                        "instruction": {
-                                            "type": "string",
-                                            "description": "如果type为'agent'，给出执行指令，给执行Agent看"
-                                        },
-                                        "dependencies": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                            "description": "该任务依赖的其他任务id列表。如果是独立任务，传空数组 []"
-                                        },
-                                        "requires_review": {
-                                            "type": "boolean",
-                                            "description": "是否需要在该任务完成后暂停执行，并将结果交由你进行复盘以决定是否调整后续DAG任务。如果其结果可能改变后续走向，设为true。"
+                                        {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "properties": {
+                                                "id": {"type": "string", "description": "任务唯一标识符，例如 't_summary_1'"},
+                                                "title": {"type": "string", "description": "简短标题，用于展示与日志"},
+                                                "type": {"type": "string", "enum": ["agent"]},
+                                                "instruction": {"type": "string", "description": "纯文本产出指令（不要调用工具）"},
+                                                "expected_output": {"type": "string", "description": "该节点产物/验收点（可选）"},
+                                                "dependencies": {"type": "array", "items": {"type": "string"}},
+                                                "requires_review": {"type": "boolean"}
+                                            },
+                                            "required": ["id", "title", "type", "instruction", "dependencies"]
                                         }
-                                    },
-                                    "required": ["id", "type", "dependencies"]
+                                    ]
                                 }
                             }
                         },
@@ -303,10 +335,18 @@ class ThinkingAgent:
         
     def run_stream(self, user_request):
         yield ("RUNNING", "\n=== [思考Agent 启动] 开始分析任务 ===")
+        injected = ""
+        try:
+            mem = ExperienceMemoryManager.get_singleton(client=self.client, model=self.model)
+            injected = mem.format_injected_context(user_request)
+        except Exception:
+            injected = ""
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_request}
         ]
+        if injected:
+            messages.insert(1, {"role": "system", "content": injected})
         
         while True:
             response = self.client.chat.completions.create(
