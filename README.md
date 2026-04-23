@@ -70,13 +70,38 @@ Our vision is to build an autonomous, highly extensible, and fault-tolerant agen
 
 ### Running the System
 
-Start the dual agent interactive system:
+Recommended: start the dual agent interactive system via `cli_rich`:
+
+```bash
+python -m cli_rich chat
+```
+
+Type your request in the terminal and watch the agents collaborate to solve it! Type `exit` to quit.
+
+Optional: install as a CLI command:
+
+```bash
+pip install -e .
+awiseoctopus chat
+```
+
+One-shot execution (good for scripting):
+
+```bash
+python -m cli_rich run --prompt "Hello, summarize my tasks for today"
+```
+
+Config check (no network/LLM calls):
+
+```bash
+python -m cli_rich run --dry-run --prompt "hi"
+```
+
+Legacy entrypoint is still available (compat):
 
 ```bash
 python app.py
 ```
-
-Type your request in the terminal and watch the agents collaborate to solve it! Type `exit` to quit.
 
 ## 🤝 Contributing
 

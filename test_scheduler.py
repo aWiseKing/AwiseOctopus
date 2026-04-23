@@ -20,5 +20,6 @@ class DAGExecutor:
         except asyncio.TimeoutError:
             print("Timeout! Jobs didn't run.")
 
-executor = DAGExecutor()
-asyncio.run(executor.execute())
+if __name__ == "__main__":
+    executor = DAGExecutor()
+    asyncio.run(executor.execute())

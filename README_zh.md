@@ -70,13 +70,38 @@
 
 ### 运行系统
 
-启动双 Agent 交互式系统：
+推荐通过 `cli_rich` 启动双 Agent 交互式系统：
+
+```bash
+python -m cli_rich chat
+```
+
+在终端中输入你的需求，观察 Agent 如何协同工作为您解决问题！输入 `exit` 退出系统。
+
+也可以将其安装为命令行工具（可选）：
+
+```bash
+pip install -e .
+awiseoctopus chat
+```
+
+单次执行（适合脚本化调用）：
+
+```bash
+python -m cli_rich run --prompt "你好，帮我总结一下今天的工作计划"
+```
+
+配置自检（不触发网络/LLM）：
+
+```bash
+python -m cli_rich run --dry-run --prompt "hi"
+```
+
+旧入口仍保留可用（兼容）：
 
 ```bash
 python app.py
 ```
-
-在终端中输入你的需求，观察 Agent 如何协同工作为您解决问题！输入 `exit` 退出系统。
 
 ## 🤝 欢迎贡献代码
 
