@@ -2,6 +2,7 @@ import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 from .execution_agent import ExecutionAgent
+from .interaction import resolve_interaction_handler
 
 class DAGExecutor:
     def __init__(self, tasks, client, model, thinking_agent, on_status_change=None, interaction_handler=None):
@@ -9,7 +10,7 @@ class DAGExecutor:
         self.model = model
         self.thinking_agent = thinking_agent
         self.on_status_change = on_status_change
-        self.interaction_handler = interaction_handler
+        self.interaction_handler = resolve_interaction_handler(interaction_handler)
         
         # 记录所有的任务对象 {task_id: task_dict}
         self.all_tasks = {t['id']: t for t in tasks}

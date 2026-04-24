@@ -92,11 +92,21 @@ class ExperienceMemoryManager:
             n_results=top_k * 2,
             where={"task_type": task_type}
         )
-        
+         
         if not results['ids'] or not results['ids'][0]:
             return ""
             
-        exp_ids = results['ids'][0]
+        # 过滤距离大于 0.3 的结果
+        exp_ids = []
+        if 'distances' in results and results['distances']:
+            for i, distance in enumerate(results['distances'][0]):
+                if distance <= 0.38:
+                    exp_ids.append(results['ids'][0][i])
+        else:
+            exp_ids = results['ids'][0]
+            
+        if not exp_ids:
+            return ""
         
         # 2. 从 SQLite 获取详细信息
         placeholders = ','.join('?' for _ in exp_ids)
@@ -144,35 +154,3 @@ class ExperienceMemoryManager:
                 hint += f"  {i}. 任务: {exp['instruction']}\n     过程: {exp['process_log']}\n     结果: {exp['result']}\n"
                 
         return hint
-
-def evaluate_experience(client, model, instruction, process_log, result):
-    """使用 LLM 评估任务执行是否成功，返回 0.0 到 1.0 的分数"""
-    prompt = (
-        "你是一个任务评估专家。请根据以下信息，评估任务的执行是否成功。\n\n"
-        f"原始任务指令：\n{instruction}\n\n"
-        f"执行过程记录：\n{process_log}\n\n"
-        f"最终结果：\n{result}\n\n"
-        "请给出一个 0.0 到 1.0 之间的浮点数作为评分（1.0 表示完美完成，0.0 表示完全失败）。\n"
-        "评分标准：\n"
-        "- 1.0: 完美解决，没有任何错误\n"
-        "- 0.8: 基本解决，但有些许瑕疵\n"
-        "- 0.5: 部分解决，存在明显问题\n"
-        "- 0.2: 严重错误，偏离目标\n"
-        "- 0.0: 完全失败或崩溃\n"
-        "请直接回复这个浮点数，不要输出任何其他内容。"
-    )
-    
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=10
-        )
-        score_str = response.choices[0].message.content.strip()
-        # 提取浮点数
-        score = float(score_str)
-        return max(0.0, min(1.0, score))
-    except Exception as e:
-        print(f"\n[经验记忆] 评估失败，默认给予 0.5 分: {e}")
-        return 0.5

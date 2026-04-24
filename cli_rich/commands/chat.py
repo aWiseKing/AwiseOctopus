@@ -60,7 +60,13 @@ def chat(ctx) -> None:
 
     api_key = _ensure_api_key(ctx)
     client = OpenAI(api_key=api_key, base_url=ctx.base_url)
-    agent = ThinkingAgent(client, ctx.model)
+    agent = ThinkingAgent(
+        client,
+        ctx.model,
+        interaction_handler=lambda tool_name, args: _interaction_handler(
+            console, tool_name, args
+        ),
+    )
 
     current_mode = "chat"
 
@@ -104,12 +110,17 @@ def chat(ctx) -> None:
 
         if current_mode == "shell":
             try:
-                console.print("[bold cyan]运行中...[/bold cyan]")
                 if sys.platform == "win32":
-                    subprocess.run(["powershell", "-Command", prompt])
+                    result = subprocess.run(["powershell", "-Command", prompt], capture_output=True, text=True, errors="replace")
                 else:
-                    subprocess.run(prompt, shell=True)
-                console.print(Panel("执行结束", title="[bold cyan]Shell 执行结果[/bold cyan]", border_style="cyan", expand=True))
+                    result = subprocess.run(prompt, shell=True, capture_output=True, text=True, errors="replace")
+                
+                output = result.stdout.strip()
+                if result.stderr.strip():
+                    output += ("\n" if output else "") + result.stderr.strip()
+                if not output:
+                    output = "（执行成功，无输出）"
+                console.print(Panel(output, title="[bold cyan]Shell 执行结果[/bold cyan]", border_style="cyan", expand=True))
             except Exception as e:
                 console.print(Panel(f"执行命令时出错: {e}", title="[bold red]错误[/bold red]", border_style="red", expand=True))
         else:

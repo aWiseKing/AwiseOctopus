@@ -1,70 +1,10 @@
 import json
 import os
-import jsonschema
 from .execution_agent import ExecutionAgent
 from .tools import registry
-from .experience_memory import ExperienceMemoryManager, evaluate_experience
-
-def _validate_dag_tasks(tasks, schema):
-    """
-    校验 DAG 任务列表的 Schema 结构以及逻辑（存在性和无环检测）
-    返回 (is_valid, error_message)
-    """
-    # 1. 基础 Schema 校验
-    try:
-        # tasks 在外部是 list，但 schema 是为包裹 tasks 的 object 设计的
-        # 所以我们包装一下进行校验
-        jsonschema.validate(instance={"tasks": tasks}, schema=schema)
-    except jsonschema.exceptions.ValidationError as e:
-        return False, f"Schema validation error: {e.message}"
-
-    # 2. 逻辑校验：提取所有的 task_id
-    task_ids = set()
-    for t in tasks:
-        if t['id'] in task_ids:
-            return False, f"Logical error: Duplicate task id '{t['id']}' found."
-        task_ids.add(t['id'])
-
-    # 3. 逻辑校验：依赖是否存在
-    for t in tasks:
-        for dep in t.get('dependencies', []):
-            if dep not in task_ids:
-                return False, f"Logical error: Task '{t['id']}' depends on non-existent task '{dep}'."
-
-    # 4. 逻辑校验：循环依赖检测 (DFS 拓扑排序)
-    # 状态: 0=未访问, 1=访问中, 2=已访问
-    visited = {tid: 0 for tid in task_ids}
-    adj_list = {t['id']: t.get('dependencies', []) for t in tasks}
-
-    def has_cycle(tid):
-        if visited[tid] == 1:
-            return True
-        if visited[tid] == 2:
-            return False
-        
-        visited[tid] = 1
-        for dep in adj_list[tid]:
-            if has_cycle(dep):
-                return True
-        visited[tid] = 2
-        return False
-
-    for tid in task_ids:
-        if visited[tid] == 0:
-            if has_cycle(tid):
-                return False, f"Logical error: Circular dependency detected involving task '{tid}'."
-
-    # 5. 逻辑校验：类型校验
-    for t in tasks:
-        t_type = t.get('type', 'agent')
-        if t_type == 'tool':
-            if 'tool' not in t or 'input' not in t:
-                return False, f"Logical error: Task '{t['id']}' with type 'tool' must have 'tool' and 'input' fields."
-        else:
-            if 'instruction' not in t:
-                return False, f"Logical error: Task '{t['id']}' with type 'agent' must have 'instruction' field."
-
-    return True, None
+from .experience_memory import ExperienceMemoryManager
+from .experience_agent import ExperienceAgent
+from .interaction import resolve_interaction_handler
 
 def _search_skill(keyword):
     """根据关键字搜索 skills 目录，返回匹配的 skill.md 内容"""
@@ -148,14 +88,16 @@ def _read_skill_md(skill_path):
     return f"技能 [{os.path.basename(skill_path)}] 缺少 .md 文件。"
 
 class ThinkingAgent:
-    def __init__(self, client, model):
+    def __init__(self, client, model, interaction_handler=None):
         self.client = client
         self.model = model
+        self.interaction_handler = resolve_interaction_handler(interaction_handler)
         self.memory_manager = ExperienceMemoryManager()
+        self.experience_agent = ExperienceAgent(client, model)
         
         execution_tools_info = json.dumps(registry.schemas, ensure_ascii=False)
         self.system_prompt = (
-            "你是一个思考Agent（Manager）。你的任务是拆解用户的复杂请求，进行必要的信息收集，并最终规划出一个基于DAG（有向无环图）的任务执行计划。\n"
+            "你是一个思考Agent（Manager）。你的任务是拆解用户的复杂请求，进行必要的信息收集，并最终规划出一个任务执行计划。\n"
             "【阶段一：信息收集与探索】\n"
             "你可以使用工具 `execute_subtask` 将探索性的子任务（如读取代码、搜索网络等）委派给执行Agent。\n"
             "执行Agent会返回结果。你需要根据结果判断是否已经收集到足够的信息来制定完整的计划。如果信息不足，继续委派探索任务；如果信息足够，进入阶段二。\n"
@@ -166,20 +108,19 @@ class ThinkingAgent:
             "当某一个探索任务或方法多次失败、无法获得预期结果（例如网络搜索失败、计算出错等）时，你必须**主动修正思考方向**。\n"
             "一种非常有效的替代方案是：**让执行Agent通过编写并运行Python代码（使用其内置的 python_eval 工具）来完成任务**。例如通过Python去请求API、爬取网页、处理复杂逻辑等。\n"
             "如果各种方法都尝试失败，或者你对如何规划有严重疑虑时，请**使用 `ask_user_for_help` 工具向用户提问**。特别地，对于**模糊不清的需求目标等信息**，你必须**整理出可能的方向后由用户选择**，切勿自行猜测。\n"
-            "\n【关于DAG校验失败的强制要求】\n"
-            "如果你在调用 `create_task` 时收到校验失败（validation error）的反馈，你必须仔细检查错误信息并**修复 DAG 的结构异常**，然后重新调用 `create_task`。\n"
-            "**绝对不允许**因为 DAG 校验失败就直接放弃规划，转而使用 `execute_subtask` 绕过校验去执行任务！\n"
-            "\n【阶段二：输出DAG任务执行图】\n"
-            "当你的思考和信息收集完成，并明确了所有需要执行的步骤后，必须使用 `create_task` 工具输出整个DAG任务执行图。\n"
-            "在DAG图中，你需要将任务进行**细致的拆分**，支持两种任务节点类型：\n"
-            "  1. `type='tool'`：直接调用特定的执行工具。必须指定 `tool`（工具名称）和 `input`（工具参数）。\n"
-            "  2. `type='agent'`：将复杂的模糊指令委派给执行Agent处理。必须指定 `instruction`。\n"
-            "请优先将明确的操作拆分为 `type='tool'` 节点。当前可直接调用的执行工具（用于 type='tool'）如下：\n"
+            "\n【阶段二：输出任务执行计划】\n"
+            "当你的思考和信息收集完成，并明确了所有需要执行的步骤后，必须使用 `submit_plan` 工具输出整个任务执行计划。\n"
+            "该计划会被交给 DAG Agent，由其转化为 DAG 任务执行图并交给执行引擎执行。\n"
+            "在计划中，你需要详细描述：\n"
+            "  1. 需要执行哪些具体任务（最好带有明确的编号或ID）。\n"
+            "  2. 任务之间的依赖顺序。\n"
+            "  3. 每个任务的具体执行方式：是直接调用特定的执行工具，还是委派给执行Agent处理复杂逻辑。\n"
+            "当前可直接调用的执行工具如下：\n"
             f"{execution_tools_info}\n"
-            "\n**【动态DAG调整（复盘机制）】**\n"
-            "如果你觉得某个任务执行后可能需要根据它的结果来决定后续任务如何进行，请将该任务的 `requires_review` 设为 true。DAG 引擎在执行完该任务后会暂停，并将结果返回给你重新规划。\n"
-            "调用 `create_task` 意味着你的思考阶段结束，DAG任务图将交给执行引擎去并行或顺序执行。\n"
-            "如果你认为用户的请求只是一个简单的问题解答，不需要规划DAG任务图，你可以直接使用 `finish_task` 工具返回最终答案。\n"
+            "\n**【动态调整（复盘机制）】**\n"
+            "如果你觉得某个任务执行后可能需要根据它的结果来决定后续任务如何进行，请在计划中明确指出该任务“完成后需要复盘（requires_review）”。\n"
+            "调用 `submit_plan` 意味着你的思考阶段结束，后续将交由 DAG Agent 和执行引擎处理。\n"
+            "如果你认为用户的请求只是一个简单的问题解答，不需要规划任务执行计划，你可以直接使用 `finish_task` 工具返回最终答案。\n"
             "千万不要自己去猜事实或做计算，必须依靠执行引擎去完成实际操作！"
         )
         self.thinking_tools_schema = [
@@ -214,53 +155,17 @@ class ThinkingAgent:
             {
                 "type": "function",
                 "function": {
-                    "name": "create_task",
-                    "description": "当你完成思考和信息收集，准备好完整的任务执行图时调用此工具。输出一个基于DAG（有向无环图）的任务计划。调用此工具代表你的思考阶段结束。",
+                    "name": "submit_plan",
+                    "description": "当你完成思考和信息收集，准备好完整的任务执行计划时调用此工具。将计划以文本形式提交给DAG Agent进行后续的DAG转换。调用此工具代表你的思考阶段结束。",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "tasks": {
-                                "type": "array",
-                                "description": "DAG任务列表，每个任务包含id、指令和依赖项。",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": {
-                                            "type": "string",
-                                            "description": "任务的唯一标识符，例如 'task_1'"
-                                        },
-                                        "type": {
-                                            "type": "string",
-                                            "enum": ["tool", "agent"],
-                                            "description": "任务类型。'tool'表示直接调用具体的工具，'agent'表示委派给执行Agent处理复杂逻辑"
-                                        },
-                                        "tool": {
-                                            "type": "string",
-                                            "description": "如果type为'tool'，指定要调用的工具名称"
-                                        },
-                                        "input": {
-                                            "type": "object",
-                                            "description": "如果type为'tool'，指定工具的输入参数"
-                                        },
-                                        "instruction": {
-                                            "type": "string",
-                                            "description": "如果type为'agent'，给出执行指令，给执行Agent看"
-                                        },
-                                        "dependencies": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                            "description": "该任务依赖的其他任务id列表。如果是独立任务，传空数组 []"
-                                        },
-                                        "requires_review": {
-                                            "type": "boolean",
-                                            "description": "是否需要在该任务完成后暂停执行，并将结果交由你进行复盘以决定是否调整后续DAG任务。如果其结果可能改变后续走向，设为true。"
-                                        }
-                                    },
-                                    "required": ["id", "type", "dependencies"]
-                                }
+                            "plan": {
+                                "type": "string",
+                                "description": "详细的任务执行计划描述，包括每个步骤需要调用的工具或委派的指令，以及步骤间的依赖关系。"
                             }
                         },
-                        "required": ["tasks"]
+                        "required": ["plan"]
                     }
                 }
             },
@@ -315,10 +220,27 @@ class ThinkingAgent:
         hint = self.memory_manager.search_experience("thinking", user_request)
         if hint:
             yield ("RUNNING", "\n[思考Agent 经验记忆] 检索到相关历史经验，已注入上下文。")
-            user_request_with_hint = f"{user_request}\n\n{hint}"
-            self.messages.append({"role": "user", "content": user_request_with_hint})
-        else:
-            self.messages.append({"role": "user", "content": user_request})
+            # 数据分层
+            for msg in self.messages:
+                if msg["role"] == "system":
+                    msg["content"] += "\n" + (
+                        "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
+                        f"{hint}\n"
+                        "〖经验参考结束〗"
+                    )
+                    break
+            else:
+                self.messages.append({
+                    "role": "system",
+                    "content": (
+                        "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
+                        f"{hint}\n"
+                        "〖经验参考结束〗"
+                    )
+                })
+
+
+        self.messages.append({"role": "user", "content": user_request})
         
         while True:
             response = self.client.chat.completions.create(
@@ -351,7 +273,7 @@ class ThinkingAgent:
                     elif name == "execute_subtask":
                         instruction = args.get("instruction", "")
                         yield ("RUNNING", f"\n[思考Agent 决策] 委派子任务 -> {instruction}")
-                        worker = ExecutionAgent(self.client, self.model)
+                        worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
                         
                         # 消费 ExecutionAgent 的流式输出
                         worker_gen = worker.run_stream(instruction)
@@ -380,34 +302,32 @@ class ThinkingAgent:
                             "name": name,
                             "content": f"用户提供的思路/回答: {user_reply}"
                         })
-                    elif name == "create_task":
-                        tasks = args.get("tasks", [])
+                    elif name == "submit_plan":
+                        plan = args.get("plan", "")
+                        yield ("RUNNING", f"\n=== [思考Agent 规划完成] 提交计划给 DAG Agent ===\n{plan}")
                         
-                        # 获取 create_task 的 schema
-                        create_task_schema = next((t["function"]["parameters"] for t in self.thinking_tools_schema if t["function"]["name"] == "create_task"), None)
+                        from .dag_agent import DAGAgent
+                        dag_agent = DAGAgent(self.client, self.model)
+                        dag_gen = dag_agent.generate_dag_stream(plan)
                         
-                        # 进行校验
-                        is_valid, error_msg = _validate_dag_tasks(tasks, create_task_schema)
-                        
-                        if not is_valid:
-                            yield ("RUNNING", f"\n[校验失败] DAG图存在错误: {error_msg}")
-                            self.messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "name": name,
-                                "content": f"Failed to create task due to validation error: {error_msg}. 你必须修复这个 DAG 图的异常并重新调用 `create_task`，绝对不允许直接转而使用 `execute_subtask` 或其他工具来绕过此校验。"
-                            })
-                            continue
-                            
-                        yield ("RUNNING", f"\n=== [思考Agent 规划完成] 输出DAG任务图: 共 {len(tasks)} 个任务 ===")
-                        dag_json = json.dumps(tasks, ensure_ascii=False, indent=2)
-                        yield ("RUNNING", f"\n[DAG 任务图详情]:\n{dag_json}")
+                        tasks = []
+                        try:
+                            while True:
+                                status, payload = next(dag_gen)
+                                if status == "RUNNING":
+                                    yield ("RUNNING", payload)
+                                elif status == "FINISHED":
+                                    tasks = payload
+                                    break
+                        except StopIteration as e:
+                            if e.value is not None:
+                                tasks = e.value
                         
                         self.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": name,
-                            "content": "DAG图已生成并提交执行"
+                            "content": "计划已由 DAG Agent 成功转化为 DAG 图并提交执行。"
                         })
                         
                         final_return_status = "FINISHED"
@@ -436,11 +356,10 @@ class ThinkingAgent:
                         })
                         
                         # 记录经验 (直接完成类型任务)
-                        yield ("RUNNING", "\n[思考Agent 经验记忆] 正在反思执行结果并记录经验...")
+                        yield ("RUNNING", "\n[思考Agent] 开始请求经验总结 Agent 处理执行结果...")
                         process_log_str = "Direct finish without DAG."
-                        score = evaluate_experience(self.client, self.model, user_request, process_log_str, final_answer)
-                        self.memory_manager.add_experience("thinking", user_request, process_log_str, final_answer, score)
-                        yield ("RUNNING", f"\n[思考Agent 经验记忆] 经验已记录 (得分: {score})")
+                        for log_msg in self.experience_agent.process_experience_stream("thinking", user_request, process_log_str, final_answer):
+                            yield ("RUNNING", f"  -> {log_msg}")
                         
                         final_return_status = "FINISHED"
                         final_return_payload = final_answer
@@ -490,7 +409,7 @@ class ThinkingAgent:
             f"执行结果如下：\n{result}\n\n"
             f"当前尚未执行的 DAG 任务列表为：\n{json.dumps(pending_tasks, ensure_ascii=False, indent=2)}\n\n"
             "请判断是否需要调整后续计划：\n"
-            "1. 如果需要调整，请调用 `create_task` 输出全新的待执行任务图（新任务图将完全覆盖上述尚未执行的任务列表）。\n"
+            "1. 如果需要调整，请调用 `submit_plan` 输出全新的待执行任务计划（新计划将完全覆盖上述尚未执行的任务列表）。\n"
             "2. 如果不需要调整，请直接调用 `continue_task` 工具。"
         )
         print(f"\n[DAG 执行器] 请求思考Agent复盘任务 {completed_task_id}...")
@@ -519,11 +438,10 @@ class ThinkingAgent:
                 yield content
         
         # 当流式输出结束后，记录完整的 DAG 经验
-        yield "\n\n[思考Agent 经验记忆] 正在反思执行结果并记录经验...\n"
+        yield "\n\n[思考Agent] 开始请求经验总结 Agent 处理执行结果...\n"
         process_log_str = json.dumps(dag_results, ensure_ascii=False)
-        score = evaluate_experience(self.client, self.model, user_request, process_log_str, summary_text)
-        self.memory_manager.add_experience("thinking", user_request, process_log_str, summary_text, score)
-        yield f"[思考Agent 经验记忆] 经验已记录 (得分: {score})\n"
+        for log_msg in self.experience_agent.process_experience_stream("thinking", user_request, process_log_str, summary_text):
+            yield f"  -> {log_msg}\n"
                 
         # 注入总结结果到思考 Agent 的上下文中
         self.messages.append({

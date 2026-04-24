@@ -1,10 +1,10 @@
 import os
 import streamlit as st
 from openai import OpenAI
-from dotenv import load_dotenv
+from models.config_manager import ConfigManager
 
-# 从重构后的 models 包导入思考Agent
-from models import ThinkingAgent
+# 从重构后的 models 包导入Session
+from models import Session
 
 # -----------------
 # 页面配置与样式
@@ -19,14 +19,15 @@ st.markdown("hello world")
 # -----------------
 @st.cache_resource
 def get_openai_client():
-    load_dotenv()
-    api_key = os.getenv("api_key")
-    base_url = os.getenv("base_url")
+    config_mgr = ConfigManager()
+    api_key = config_mgr.get("api_key") or os.getenv("api_key")
+    base_url = config_mgr.get("base_url") or os.getenv("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    MODEL = config_mgr.get("MODEL") or os.getenv("MODEL") or "gpt-4o"
     if not api_key:
-        st.error("请在 .env 文件中配置 api_key")
+        st.error("请使用 cli_rich env set api_key <your_key> 配置 api_key")
         
         st.stop()
-    return OpenAI(api_key=api_key, base_url=base_url), os.getenv("MODEL", "gpt-4o")
+    return OpenAI(api_key=api_key, base_url=base_url), MODEL
 
 client, MODEL = get_openai_client()
 
@@ -66,9 +67,9 @@ if "summary_text" not in st.session_state:
 if "summary_generator" not in st.session_state:
     st.session_state.summary_generator = None
 
-if "agent" not in st.session_state:
-    # 实例化持久的 ThinkingAgent 维持多轮上下文
-    st.session_state.agent = ThinkingAgent(client, MODEL)
+if "session" not in st.session_state:
+    # 实例化持久的 Session 维持多轮上下文
+    st.session_state.session = Session(client, MODEL)
 
 # -----------------
 # 渲染历史消息
@@ -106,8 +107,7 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
     
     # 判断是新任务还是回复 Agent 求助
     if st.session_state.agent_gen is None:
-        agent = st.session_state.agent
-        st.session_state.agent_gen = agent.run_stream(prompt)
+        st.session_state.agent_gen = st.session_state.session.think_stream(prompt)
         st.session_state.logs = []
     else:
         user_input_to_send = prompt
@@ -152,7 +152,6 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                         import json
                         import asyncio
                         import threading
-                        from models import DAGExecutor
                         
                         status_container.info("**任务规划完成，开始调度执行 DAG 图...**")
                         
@@ -174,20 +173,23 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                             req["event"].wait()
                             return req["response"]
 
-                        def run_dag_thread(executor, app_session):
+                        def run_dag_thread(session_obj, app_session):
                             # The executor runs in a new event loop
                             try:
                                 loop = asyncio.new_event_loop()
                                 asyncio.set_event_loop(loop)
-                                results = loop.run_until_complete(executor.execute())
+                                results = loop.run_until_complete(session_obj.execute_dag_async(
+                                    payload,
+                                    on_status_change=update_dag,
+                                    interaction_handler=web_interaction_handler
+                                ))
                                 app_session.dag_results = results
                             except Exception as e:
                                 app_session.dag_results = f"DAG执行错误: {e}"
                             finally:
                                 app_session.dag_running = False
 
-                        executor = DAGExecutor(payload, client, MODEL, agent, on_status_change=update_dag, interaction_handler=web_interaction_handler)
-                        t = threading.Thread(target=run_dag_thread, args=(executor, st.session_state))
+                        t = threading.Thread(target=run_dag_thread, args=(st.session_state.session, st.session_state))
                         t.daemon = True
                         t.start()
                         
@@ -290,8 +292,7 @@ if st.session_state.dag_running or st.session_state.dag_results is not None:
         })
         
         # 准备生成总结
-        agent = st.session_state.agent
-        st.session_state.summary_generator = agent.summarize_dag_results_stream(st.session_state.dag_prompt, st.session_state.dag_results)
+        st.session_state.summary_generator = st.session_state.session.summarize_stream(st.session_state.dag_prompt, st.session_state.dag_results)
         st.session_state.summary_text = ""
         st.rerun()
 
