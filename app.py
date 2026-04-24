@@ -2,18 +2,18 @@ import os
 import asyncio
 import json
 from openai import OpenAI
-from dotenv import load_dotenv
-load_dotenv()
 
-# 从我们重构后的models包导入思考Agent和DAGExecutor
-from models import ThinkingAgent, DAGExecutor
+from models.config_manager import ConfigManager
+# 从我们重构后的models包导入Session
+from models import Session
 
 # -----------------
 # 客户端初始化
 # -----------------
-api_key = os.getenv("api_key")
-base_url = os.getenv("base_url")
-MODEL = os.getenv("MODEL")
+config_mgr = ConfigManager()
+api_key = config_mgr.get("api_key") or os.getenv("api_key")
+base_url = config_mgr.get("base_url") or os.getenv("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+MODEL = config_mgr.get("MODEL") or os.getenv("MODEL") or "glm-5"
 
 client = OpenAI(
     api_key=api_key,
@@ -60,8 +60,8 @@ if __name__ == "__main__":
     print("[*] 提示 (HINT) : 输入 'exit' 退出程序，按 Ctrl+C 中断。")
     print("=" * terminal_width)
     
-    # 实例化持久的 ThinkingAgent 维持多轮上下文
-    manager = ThinkingAgent(client, MODEL)
+    # 实例化持久的 Session 维持多轮上下文
+    session = Session(client, MODEL)
     
     while True:
         try:
@@ -72,16 +72,18 @@ if __name__ == "__main__":
             if not prompt.strip():
                 continue
             
-            final_response = manager.run(prompt)
+            final_response = session.think(prompt)
             
             if isinstance(final_response, list):
                 print("\n[系统] 接收到 DAG 任务图，开始调度执行...")
-                executor = DAGExecutor(final_response, client, MODEL, manager, interaction_handler=cli_interaction_handler)
-                results = asyncio.run(executor.execute())
+                results = asyncio.run(session.execute_dag_async(
+                    final_response, 
+                    interaction_handler=cli_interaction_handler
+                ))
                 print(f"\n✅ DAG 最终执行结果（JSON）：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
                 
                 print("\n[系统] 正在生成最终总结报告...\n")
-                for chunk in manager.summarize_dag_results_stream(prompt, results):
+                for chunk in session.summarize_stream(prompt, results):
                     print(chunk, end="", flush=True)
                 print("\n")
             else:
