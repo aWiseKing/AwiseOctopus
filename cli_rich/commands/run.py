@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import uuid
 from pathlib import Path
 
 import click
@@ -11,6 +12,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from models import DAGExecutor, ThinkingAgent
+from models.config_manager import ConfigManager
+from models.session_store import SessionStore
 
 
 def _interaction_handler(console, tool_name: str, args: dict) -> str:
@@ -29,7 +32,10 @@ def _interaction_handler(console, tool_name: str, args: dict) -> str:
 def _ensure_api_key(ctx) -> str:
     if getattr(ctx, "api_key", None):
         return ctx.api_key
-    api_key = Prompt.ask("请输入 api_key", password=True)
+    if not sys.stdin.isatty():
+        api_key = (sys.stdin.readline() or "").strip()
+    else:
+        api_key = Prompt.ask("请输入 api_key", password=True)
     ctx.api_key = api_key
     return api_key
 
@@ -85,22 +91,61 @@ def _read_prompt(prompt: str | None, prompt_file: str | None) -> str:
     raise click.ClickException("未提供输入。请使用 --prompt / --prompt-file 或通过 stdin 传入。")
 
 
+def _sync_current_session(store: SessionStore, config_mgr: ConfigManager) -> str | None:
+    cfg = config_mgr.get("session_id")
+    db = store.get_current()
+    if cfg:
+        if cfg != db:
+            store.set_current(cfg)
+        return cfg
+    if db:
+        config_mgr.set("session_id", db)
+        return db
+    return None
+
+
 @click.command("run")
 @click.option("--prompt", default=None)
 @click.option("--prompt-file", type=click.Path(dir_okay=False, exists=True), default=None)
 @click.option("--dry-run", is_flag=True, default=False)
+@click.option("--session", "session_ref", default=None)
 @click.pass_obj
-def run(ctx, prompt: str | None, prompt_file: str | None, dry_run: bool) -> None:
+def run(
+    ctx,
+    prompt: str | None,
+    prompt_file: str | None,
+    dry_run: bool,
+    session_ref: str | None,
+) -> None:
     console = ctx.console
     text = _read_prompt(prompt, prompt_file).strip()
     if not text:
         raise click.ClickException("输入为空。")
 
+    config_mgr = ConfigManager()
+    store = SessionStore()
+
+    session_id = None
+    if session_ref:
+        session_id = store.resolve_session(session_ref)
+        if not session_id:
+            session_id = session_ref.strip()
+            store.create_session(session_id, name=None)
+        store.set_current(session_id)
+        config_mgr.set("session_id", session_id)
+    else:
+        session_id = _sync_current_session(store, config_mgr)
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            store.create_session(session_id, name=None)
+            store.set_current(session_id)
+            config_mgr.set("session_id", session_id)
+
     if dry_run:
         _ensure_api_key(ctx)
         console.print(
             Panel.fit(
-                f"base_url: {ctx.base_url}\nmodel: {ctx.model}\nchars: {len(text)}",
+                f"base_url: {ctx.base_url}\nmodel: {ctx.model}\nsession_id: {session_id}\nchars: {len(text)}",
                 title="配置校验通过（dry-run）",
                 border_style="green",
             )
@@ -112,6 +157,8 @@ def run(ctx, prompt: str | None, prompt_file: str | None, dry_run: bool) -> None
     agent = ThinkingAgent(
         client,
         ctx.model,
+        session_id=session_id,
+        session_store=store,
         interaction_handler=lambda tool_name, args: _interaction_handler(
             console, tool_name, args
         ),

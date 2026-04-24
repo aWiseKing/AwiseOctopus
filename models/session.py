@@ -2,6 +2,7 @@ import uuid
 from .thinking_agent import ThinkingAgent
 from .dag_executor import DAGExecutor
 from .interaction import resolve_interaction_handler
+from .session_store import SessionStore
 
 class Session:
     """
@@ -13,7 +14,14 @@ class Session:
         self.client = client
         self.model = model
         self.interaction_handler = resolve_interaction_handler(interaction_handler)
-        self.agent = ThinkingAgent(client, model, interaction_handler=self.interaction_handler)
+        self.store = SessionStore()
+        self.agent = ThinkingAgent(
+            client,
+            model,
+            session_id=self.session_id,
+            session_store=self.store,
+            interaction_handler=self.interaction_handler,
+        )
         
     def think_stream(self, prompt):
         """流式生成思考过程"""

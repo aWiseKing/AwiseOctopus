@@ -88,9 +88,11 @@ def _read_skill_md(skill_path):
     return f"技能 [{os.path.basename(skill_path)}] 缺少 .md 文件。"
 
 class ThinkingAgent:
-    def __init__(self, client, model, interaction_handler=None):
+    def __init__(self, client, model, session_id=None, session_store=None, interaction_handler=None):
         self.client = client
         self.model = model
+        self.session_id = session_id
+        self.session_store = session_store
         self.interaction_handler = resolve_interaction_handler(interaction_handler)
         self.memory_manager = ExperienceMemoryManager()
         self.experience_agent = ExperienceAgent(client, model)
@@ -210,70 +212,114 @@ class ThinkingAgent:
                 }
             }
         ]
-        
+
         self.messages = [{"role": "system", "content": self.system_prompt}]
+        if self.session_store and self.session_id:
+            for msg in self.session_store.load_messages(self.session_id):
+                if isinstance(msg, dict) and msg.get("role") != "system":
+                    self.messages.append(msg)
+
+    def _append_message(self, msg: dict, persist: bool = True) -> None:
+        if not isinstance(msg, dict):
+            return
+        self.messages.append(msg)
+        if (
+            persist
+            and self.session_store
+            and self.session_id
+            and msg.get("role") != "system"
+        ):
+            self.session_store.append_message(self.session_id, msg)
+
+    def _normalize_assistant_message(self, msg):
+        if isinstance(msg, dict):
+            return msg
+
+        role = getattr(msg, "role", None)
+        content = getattr(msg, "content", None)
+        tool_calls = getattr(msg, "tool_calls", None)
+
+        normalized = {"role": role or "assistant", "content": content}
+        if tool_calls:
+            calls = []
+            for tc in tool_calls:
+                function = getattr(tc, "function", None)
+                calls.append(
+                    {
+                        "id": getattr(tc, "id", None),
+                        "type": getattr(tc, "type", "function"),
+                        "function": {
+                            "name": getattr(function, "name", None),
+                            "arguments": getattr(function, "arguments", None),
+                        },
+                    }
+                )
+            normalized["tool_calls"] = calls
+        return normalized
+
+    def _messages_for_llm(self, injected_system_message: str | None):
+        if not injected_system_message:
+            return self.messages
+        base = list(self.messages)
+        base.insert(1, {"role": "system", "content": injected_system_message})
+        return base
         
     def run_stream(self, user_request):
         yield ("RUNNING", "\n=== [思考Agent 启动] 开始分析任务 ===")
         
         # 搜索历史经验
-        hint = self.memory_manager.search_experience("thinking", user_request)
+        hint = self.memory_manager.search_experience(
+            "thinking", user_request, session_id=self.session_id
+        )
+        injected_system_message = None
         if hint:
             yield ("RUNNING", "\n[思考Agent 经验记忆] 检索到相关历史经验，已注入上下文。")
-            # 数据分层
-            for msg in self.messages:
-                if msg["role"] == "system":
-                    msg["content"] += "\n" + (
-                        "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
-                        f"{hint}\n"
-                        "〖经验参考结束〗"
-                    )
-                    break
-            else:
-                self.messages.append({
-                    "role": "system",
-                    "content": (
-                        "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
-                        f"{hint}\n"
-                        "〖经验参考结束〗"
-                    )
-                })
+            injected_system_message = (
+                "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
+                f"{hint}\n"
+                "〖经验参考结束〗"
+            )
 
 
-        self.messages.append({"role": "user", "content": user_request})
+        self._append_message({"role": "user", "content": user_request})
         
         while True:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=self.messages,
+                messages=self._messages_for_llm(injected_system_message),
                 tools=self.thinking_tools_schema
             )
-            msg = response.choices[0].message
-            self.messages.append(msg)
+            msg = self._normalize_assistant_message(response.choices[0].message)
+            self._append_message(msg)
             
-            if msg.tool_calls:
+            if msg.get("tool_calls"):
                 final_return_payload = None
                 final_return_status = None
                 
-                for tool_call in msg.tool_calls:
-                    name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
+                for tool_call in msg.get("tool_calls", []):
+                    name = (tool_call.get("function") or {}).get("name")
+                    args = json.loads((tool_call.get("function") or {}).get("arguments") or "{}")
                     
                     if name == "search_skill":
                         keyword = args.get("keyword", "")
                         yield ("RUNNING", f"\n[思考Agent 检索技能] 关键词: {keyword}")
                         skill_content = _search_skill(keyword)
                         
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call.get("id"),
                             "name": name,
                             "content": str(skill_content)
                         })
                     elif name == "execute_subtask":
                         instruction = args.get("instruction", "")
                         yield ("RUNNING", f"\n[思考Agent 决策] 委派子任务 -> {instruction}")
-                        worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
+                        worker = ExecutionAgent(
+                            self.client,
+                            self.model,
+                            session_id=self.session_id,
+                            interaction_handler=self.interaction_handler,
+                        )
                         
                         # 消费 ExecutionAgent 的流式输出
                         worker_gen = worker.run_stream(instruction)
@@ -284,9 +330,9 @@ class ThinkingAgent:
                         except StopIteration as e:
                             result = e.value
                         
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call.get("id"),
                             "name": name,
                             "content": result
                         })
@@ -296,9 +342,9 @@ class ThinkingAgent:
                         
                         user_reply = yield ("ASK_USER", question)
                         
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call.get("id"),
                             "name": name,
                             "content": f"用户提供的思路/回答: {user_reply}"
                         })
@@ -323,9 +369,9 @@ class ThinkingAgent:
                             if e.value is not None:
                                 tasks = e.value
                         
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call.get("id"),
                             "name": name,
                             "content": "计划已由 DAG Agent 成功转化为 DAG 图并提交执行。"
                         })
@@ -335,9 +381,9 @@ class ThinkingAgent:
                     elif name == "continue_task":
                         yield ("RUNNING", "\n=== [思考Agent 复盘完成] 维持原DAG计划，继续执行 ===")
                         
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call.get("id"),
                             "name": name,
                             "content": "维持原计划继续执行"
                         })
@@ -348,9 +394,9 @@ class ThinkingAgent:
                         final_answer = args.get("final_answer", "")
                         yield ("RUNNING", "\n=== [思考Agent 完成] 所有任务已完成 ===")
                         
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call.get("id"),
                             "name": name,
                             "content": f"任务已完成，最终回复: {final_answer}"
                         })
@@ -358,16 +404,22 @@ class ThinkingAgent:
                         # 记录经验 (直接完成类型任务)
                         yield ("RUNNING", "\n[思考Agent] 开始请求经验总结 Agent 处理执行结果...")
                         process_log_str = "Direct finish without DAG."
-                        for log_msg in self.experience_agent.process_experience_stream("thinking", user_request, process_log_str, final_answer):
+                        for log_msg in self.experience_agent.process_experience_stream(
+                            "thinking",
+                            user_request,
+                            process_log_str,
+                            final_answer,
+                            session_id=self.session_id,
+                        ):
                             yield ("RUNNING", f"  -> {log_msg}")
                         
                         final_return_status = "FINISHED"
                         final_return_payload = final_answer
                     else:
                         yield ("RUNNING", f"\n[思考Agent 错误] 调用了未知工具: {name}")
-                        self.messages.append({
+                        self._append_message({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call.get("id"),
                             "name": name,
                             "content": f"Error: Unknown tool '{name}'."
                         })
@@ -376,9 +428,15 @@ class ThinkingAgent:
                     yield (final_return_status, final_return_payload)
                     return final_return_payload
             else:
-                if msg.content:
-                    yield ("RUNNING", f"\n[思考Agent 自言自语] {msg.content}")
-                    self.messages.append({"role": "user", "content": "请使用工具 execute_subtask 委派任务，或使用 finish_task 结束。"})
+                content = msg.get("content")
+                if content:
+                    yield ("RUNNING", f"\n[思考Agent 自言自语] {content}")
+                    self._append_message(
+                        {
+                            "role": "user",
+                            "content": "请使用工具 execute_subtask 委派任务，或使用 finish_task 结束。",
+                        }
+                    )
 
     def run(self, user_request):
         gen = self.run_stream(user_request)
@@ -440,11 +498,17 @@ class ThinkingAgent:
         # 当流式输出结束后，记录完整的 DAG 经验
         yield "\n\n[思考Agent] 开始请求经验总结 Agent 处理执行结果...\n"
         process_log_str = json.dumps(dag_results, ensure_ascii=False)
-        for log_msg in self.experience_agent.process_experience_stream("thinking", user_request, process_log_str, summary_text):
+        for log_msg in self.experience_agent.process_experience_stream(
+            "thinking",
+            user_request,
+            process_log_str,
+            summary_text,
+            session_id=self.session_id,
+        ):
             yield f"  -> {log_msg}\n"
                 
         # 注入总结结果到思考 Agent 的上下文中
-        self.messages.append({
+        self._append_message({
             "role": "user",
             "content": f"系统通知：上一个任务的DAG执行结果总结如下：\n{summary_text}\n请在后续对话中记住这些信息。"
         })

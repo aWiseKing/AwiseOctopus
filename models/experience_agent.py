@@ -95,7 +95,7 @@ class ExperienceAgent:
             print(f"\n[经验总结 Agent] 评估失败，默认给予 0.5 分: {e}")
             return 0.5
 
-    def process_experience_stream(self, task_type, instruction, process_log, result):
+    def process_experience_stream(self, task_type, instruction, process_log, result, session_id=None):
         """流式处理并记录经验，返回日志状态"""
         yield f"[经验总结 Agent] 正在提炼执行过程..."
         
@@ -108,6 +108,8 @@ class ExperienceAgent:
         
         yield f"[经验总结 Agent] 正在保存经验数据..."
         # 3. 保存经验
-        self.memory_manager.add_experience(task_type, instruction, distilled_log, result, score)
+        self.memory_manager.add_experience(
+            task_type, instruction, distilled_log, result, score, session_id=session_id
+        )
         
         yield f"[经验总结 Agent] 经验已记录 (得分: {score})"

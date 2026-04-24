@@ -3,28 +3,72 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import uuid
 
 import click
 from openai import OpenAI
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import ExecutableCompleter, merge_completers, WordCompleter
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import InMemoryHistory
 from rich.json import JSON
 from rich.live import Live
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.table import Table
 
 from models import DAGExecutor, ThinkingAgent
+from models.config_manager import ConfigManager
+from models.session_store import SessionStore
 
 from .run import _consume_run_stream, _ensure_api_key, _interaction_handler
+
+
+def _short_sid(sid: str | None) -> str:
+    if not sid:
+        return ""
+    s = str(sid)
+    if len(s) <= 8:
+        return s
+    return s[:8]
+
+
+def _sync_current_session(store: SessionStore, config_mgr: ConfigManager) -> str | None:
+    cfg = config_mgr.get("session_id")
+    db = store.get_current()
+    if cfg:
+        if cfg != db:
+            store.set_current(cfg)
+        return cfg
+    if db:
+        config_mgr.set("session_id", db)
+        return db
+    return None
+
+
+def _get_session_name(store: SessionStore, session_id: str) -> str:
+    for it in store.list_sessions():
+        if it.get("session_id") == session_id:
+            return it.get("name") or ""
+    return ""
 
 
 @click.command("chat")
 @click.pass_obj
 def chat(ctx) -> None:
     console = ctx.console
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import (
+            ExecutableCompleter,
+            merge_completers,
+            WordCompleter,
+        )
+        from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.history import InMemoryHistory
+    except ModuleNotFoundError as e:
+        raise click.ClickException(
+            "缺少依赖 prompt_toolkit，无法使用 chat 子命令。请安装 prompt_toolkit 后重试。"
+        ) from e
     from rich.align import Align
+
+    config_mgr = ConfigManager()
 
     sword_shield_art = r"""
         />_________________________________
@@ -40,29 +84,32 @@ def chat(ctx) -> None:
          \  ||  /
           '.||.'
 """
+    api_key = _ensure_api_key(ctx)
+    client = OpenAI(api_key=api_key, base_url=ctx.base_url)
+    store = SessionStore()
+
+    session_id = _sync_current_session(store, config_mgr)
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        store.create_session(session_id, name=None)
+        store.set_current(session_id)
+        config_mgr.set("session_id", session_id)
+
+    session_name = _get_session_name(store, session_id)
     info_content = (
         f"模型: [green]{ctx.model}[/green]\n"
         f"接口: [green]{ctx.base_url}[/green]\n"
-        f"提示: [yellow]输入 exit 退出，输入 /shell 切换到命令行模式，输入 /chat 切换回聊天模式。[/yellow]"
+        f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
+        f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
     )
-    content = (
-        f"[bold cyan]{sword_shield_art}[/bold cyan]\n"
-        f"{info_content}"
-    )
-    console.print(
-        Panel(
-            content,
-            title="[bold cyan]AwiseOctopus[/bold cyan]",
-            border_style="cyan",
-            expand=True,
-        )
-    )
+    content = f"[bold cyan]{sword_shield_art}[/bold cyan]\n{info_content}"
+    console.print(Panel(content, title="[bold cyan]AwiseOctopus[/bold cyan]", border_style="cyan", expand=True))
 
-    api_key = _ensure_api_key(ctx)
-    client = OpenAI(api_key=api_key, base_url=ctx.base_url)
     agent = ThinkingAgent(
         client,
         ctx.model,
+        session_id=session_id,
+        session_store=store,
         interaction_handler=lambda tool_name, args: _interaction_handler(
             console, tool_name, args
         ),
@@ -70,7 +117,9 @@ def chat(ctx) -> None:
 
     current_mode = "chat"
 
-    built_in_completer = WordCompleter(["/shell", "/chat", "exit"], ignore_case=True)
+    built_in_completer = WordCompleter(
+        ["/shell", "/chat", "/session", "exit"], ignore_case=True
+    )
     system_completer = ExecutableCompleter()
     chat_mode_completer = built_in_completer
     shell_mode_completer = merge_completers([built_in_completer, system_completer])
@@ -106,6 +155,110 @@ def chat(ctx) -> None:
         elif prompt == "/chat":
             current_mode = "chat"
             console.print("[green]已切换到 Chat 模式[/green]")
+            continue
+        elif current_mode == "chat" and prompt.startswith("/session"):
+            parts = prompt.strip().split()
+            sub = parts[1] if len(parts) >= 2 else ""
+
+            if sub in ("list", "ls"):
+                items = store.list_sessions()
+                if not items:
+                    console.print(Panel.fit("暂无 session。", border_style="yellow"))
+                    continue
+                table = Table(title="Sessions")
+                table.add_column("*", justify="center")
+                table.add_column("Name", style="bold")
+                table.add_column("Session ID", style="cyan")
+                table.add_column("Updated", style="green")
+                table.add_column("Msgs", justify="right")
+                for it in items:
+                    star = "*" if it.get("is_current") else ""
+                    name = it.get("name") or ""
+                    sid = it.get("session_id") or ""
+                    updated = it.get("updated_at") or ""
+                    msgs = str(it.get("message_count") or 0)
+                    table.add_row(star, name, sid, updated, msgs)
+                console.print(table)
+                continue
+
+            if sub in ("current", "cur"):
+                sid = _sync_current_session(store, config_mgr)
+                if not sid:
+                    console.print(Panel.fit("当前未选择 session。", border_style="yellow"))
+                    continue
+                name = _get_session_name(store, sid)
+                console.print(
+                    Panel.fit(
+                        f"name: {name}\nsession_id: {sid}\nshort: {_short_sid(sid)}",
+                        title="当前 Session",
+                        border_style="cyan",
+                    )
+                )
+                continue
+
+            if sub == "new":
+                name = parts[2] if len(parts) >= 3 else None
+                sid = str(uuid.uuid4())
+                store.create_session(sid, name=name)
+                store.set_current(sid)
+                config_mgr.set("session_id", sid)
+                session_id = sid
+                session_name = _get_session_name(store, session_id)
+                agent = ThinkingAgent(
+                    client,
+                    ctx.model,
+                    session_id=session_id,
+                    session_store=store,
+                    interaction_handler=lambda tool_name, args: _interaction_handler(
+                        console, tool_name, args
+                    ),
+                )
+                info_content = (
+                    f"模型: [green]{ctx.model}[/green]\n"
+                    f"接口: [green]{ctx.base_url}[/green]\n"
+                    f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
+                    f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
+                )
+                console.print(Panel.fit(f"已创建并切换到 session: {sid}", border_style="green"))
+                continue
+
+            if sub == "use":
+                if len(parts) < 3:
+                    console.print(Panel.fit("用法: /session use <name|session_id>", border_style="yellow"))
+                    continue
+                ref = parts[2]
+                sid = store.resolve_session(ref)
+                if not sid:
+                    sid = ref.strip()
+                    store.create_session(sid, name=None)
+                store.set_current(sid)
+                config_mgr.set("session_id", sid)
+                session_id = sid
+                session_name = _get_session_name(store, session_id)
+                agent = ThinkingAgent(
+                    client,
+                    ctx.model,
+                    session_id=session_id,
+                    session_store=store,
+                    interaction_handler=lambda tool_name, args: _interaction_handler(
+                        console, tool_name, args
+                    ),
+                )
+                info_content = (
+                    f"模型: [green]{ctx.model}[/green]\n"
+                    f"接口: [green]{ctx.base_url}[/green]\n"
+                    f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
+                    f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
+                )
+                console.print(Panel.fit(f"已切换到 session: {sid}", border_style="green"))
+                continue
+
+            console.print(
+                Panel.fit(
+                    "用法: /session list | /session current | /session new [name] | /session use <name|session_id>",
+                    border_style="yellow",
+                )
+            )
             continue
 
         if current_mode == "shell":

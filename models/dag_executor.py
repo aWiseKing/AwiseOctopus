@@ -78,7 +78,12 @@ class DAGExecutor:
             else:
                 result = await asyncio.to_thread(registry.execute, tool_name, tool_args)
         else:
-            worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
+            worker = ExecutionAgent(
+                self.client,
+                self.model,
+                session_id=getattr(self.thinking_agent, "session_id", None),
+                interaction_handler=self.interaction_handler,
+            )
             result = await worker.async_run(task_data.get('instruction', ''))
             
         return {"task_id": task_id, "result": result}

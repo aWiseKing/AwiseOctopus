@@ -5,9 +5,10 @@ from .experience_agent import ExperienceAgent
 from .interaction import resolve_interaction_handler
 
 class ExecutionAgent:
-    def __init__(self, client, model, interaction_handler=None):
+    def __init__(self, client, model, session_id=None, interaction_handler=None):
         self.client = client
         self.model = model
+        self.session_id = session_id
         self.interaction_handler = resolve_interaction_handler(interaction_handler)
         self.memory_manager = ExperienceMemoryManager()
         self.experience_agent = ExperienceAgent(client, model)
@@ -20,34 +21,28 @@ class ExecutionAgent:
 
     def run_stream(self, instruction):
         yield f"  >>> [执行Agent 启动] 接收到子任务: {instruction}"
-        
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": instruction}
-        ]
-        
+
         # 搜索历史经验
-        hint = self.memory_manager.search_experience("execution", instruction)
+        hint = self.memory_manager.search_experience(
+            "execution", instruction, session_id=self.session_id
+        )
+
+        messages = [{"role": "system", "content": self.system_prompt}]
         if hint:
             yield f"  >>> [执行Agent 经验记忆] 检索到相关历史经验，已注入上下文。"
-            # 数据分层
-            for msg in messages:
-                if msg["role"] == "system":
-                    msg["content"] += "\n" + (
-                        "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
-                        f"{hint}\n"
-                        "〖经验参考结束〗"
-                    )
-                    break
-            else:
-                messages.append({
+            messages.append(
+                {
                     "role": "system",
                     "content": (
                         "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
                         f"{hint}\n"
                         "〖经验参考结束〗"
-                    )
-                })
+                    ),
+                }
+            )
+
+        messages.append({"role": "user", "content": instruction})
+
             
         process_log = []
         
@@ -58,7 +53,6 @@ class ExecutionAgent:
                 tools=registry.schemas if registry.schemas else None
             )
             msg = response.choices[0].message
-            messages.append(msg)
             
             if msg.tool_calls:
                 for tool_call in msg.tool_calls:
@@ -104,7 +98,13 @@ class ExecutionAgent:
                 # 记录经验
                 yield f"  >>> [执行Agent] 开始请求经验总结 Agent 处理执行结果..."
                 process_log_str = "\n".join(process_log)
-                for log_msg in self.experience_agent.process_experience_stream("execution", instruction, process_log_str, final_result):
+                for log_msg in self.experience_agent.process_experience_stream(
+                    "execution",
+                    instruction,
+                    process_log_str,
+                    final_result,
+                    session_id=self.session_id,
+                ):
                     yield f"      {log_msg}"
                 
                 return final_result
