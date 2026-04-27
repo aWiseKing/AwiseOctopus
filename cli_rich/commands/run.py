@@ -109,7 +109,13 @@ def run(ctx, prompt: str | None, prompt_file: str | None, dry_run: bool) -> None
 
     api_key = _ensure_api_key(ctx)
     client = OpenAI(api_key=api_key, base_url=ctx.base_url)
-    agent = ThinkingAgent(client, ctx.model)
+    agent = ThinkingAgent(
+        client,
+        ctx.model,
+        interaction_handler=lambda tool_name, args: _interaction_handler(
+            console, tool_name, args
+        ),
+    )
     payload = _consume_run_stream(console, agent.run_stream(text), allow_interaction=sys.stdin.isatty())
 
     if isinstance(payload, list):

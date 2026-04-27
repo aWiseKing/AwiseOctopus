@@ -2,12 +2,13 @@ import json
 from .tools import registry
 from .experience_memory import ExperienceMemoryManager
 from .experience_agent import ExperienceAgent
+from .interaction import resolve_interaction_handler
 
 class ExecutionAgent:
     def __init__(self, client, model, interaction_handler=None):
         self.client = client
         self.model = model
-        self.interaction_handler = interaction_handler
+        self.interaction_handler = resolve_interaction_handler(interaction_handler)
         self.memory_manager = ExperienceMemoryManager()
         self.experience_agent = ExperienceAgent(client, model)
         self.system_prompt = (

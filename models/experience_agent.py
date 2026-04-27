@@ -1,4 +1,5 @@
 import json
+import re
 from .experience_memory import ExperienceMemoryManager
 
 class ExperienceAgent:
@@ -8,6 +9,36 @@ class ExperienceAgent:
         self.client = client
         self.model = model
         self.memory_manager = ExperienceMemoryManager()
+
+    def _strip_think(self, text: str) -> str:
+        if not text:
+            return ""
+        return re.sub(r"<think>[\s\S]*?</think>", "", str(text), flags=re.IGNORECASE).strip()
+
+    def _extract_score(self, text: str):
+        cleaned = self._strip_think(text)
+        s = cleaned.strip()
+
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                obj = json.loads(s)
+            except Exception:
+                obj = None
+            if isinstance(obj, dict):
+                for key in ("score", "rating", "value"):
+                    if key in obj:
+                        try:
+                            return float(obj[key])
+                        except Exception:
+                            return None
+
+        m = re.search(r"(?<![\d.])(?:0(?:\.\d+)?|1(?:\.0+)?)(?![\d.])", s)
+        if not m:
+            return None
+        try:
+            return float(m.group(0))
+        except Exception:
+            return None
         
     def _distill_process_log(self, process_log):
         """使用 LLM 提炼 process_log 内容，避免上下文过重"""
@@ -42,7 +73,7 @@ class ExperienceAgent:
             "- 0.5: 部分解决，存在明显问题\n"
             "- 0.2: 严重错误，偏离目标\n"
             "- 0.0: 完全失败或崩溃\n"
-            "请直接回复这个浮点数，不要输出任何其他内容。"
+            "请直接回复这个浮点数，不要输出任何其他内容，也不要包含 <think> 标签或其他标签。"
         )
         try:
             response = self.client.chat.completions.create(
@@ -51,9 +82,15 @@ class ExperienceAgent:
                 temperature=0.1,
                 max_tokens=10
             )
-            score_str = response.choices[0].message.content.strip()
-            score = float(score_str)
-            return max(0.0, min(1.0, score))
+            raw = response.choices[0].message.content or ""
+            score = self._extract_score(raw)
+            cleaned_preview = self._strip_think(raw).replace("\n", " ").strip()[:200]
+            print(f"[经验总结 Agent] 评估回复(清洗后): {cleaned_preview}")
+
+            if score is None:
+                return 0.5
+
+            return max(0.0, min(1.0, float(score)))
         except Exception as e:
             print(f"\n[经验总结 Agent] 评估失败，默认给予 0.5 分: {e}")
             return 0.5

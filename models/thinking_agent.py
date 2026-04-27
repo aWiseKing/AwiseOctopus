@@ -4,6 +4,7 @@ from .execution_agent import ExecutionAgent
 from .tools import registry
 from .experience_memory import ExperienceMemoryManager
 from .experience_agent import ExperienceAgent
+from .interaction import resolve_interaction_handler
 
 def _search_skill(keyword):
     """根据关键字搜索 skills 目录，返回匹配的 skill.md 内容"""
@@ -87,9 +88,10 @@ def _read_skill_md(skill_path):
     return f"技能 [{os.path.basename(skill_path)}] 缺少 .md 文件。"
 
 class ThinkingAgent:
-    def __init__(self, client, model):
+    def __init__(self, client, model, interaction_handler=None):
         self.client = client
         self.model = model
+        self.interaction_handler = resolve_interaction_handler(interaction_handler)
         self.memory_manager = ExperienceMemoryManager()
         self.experience_agent = ExperienceAgent(client, model)
         
@@ -271,7 +273,7 @@ class ThinkingAgent:
                     elif name == "execute_subtask":
                         instruction = args.get("instruction", "")
                         yield ("RUNNING", f"\n[思考Agent 决策] 委派子任务 -> {instruction}")
-                        worker = ExecutionAgent(self.client, self.model)
+                        worker = ExecutionAgent(self.client, self.model, interaction_handler=self.interaction_handler)
                         
                         # 消费 ExecutionAgent 的流式输出
                         worker_gen = worker.run_stream(instruction)
