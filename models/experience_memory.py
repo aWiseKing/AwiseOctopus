@@ -107,9 +107,15 @@ class ExperienceMemoryManager:
             return ""
             
         # 1. 向量检索最相关的 instruction
-        where = {"task_type": task_type}
+        where_conditions = [{"task_type": task_type}]
         if session_id is not None:
-            where["session_id"] = session_id
+            where_conditions.append({"session_id": session_id})
+            
+        if len(where_conditions) > 1:
+            where = {"$and": where_conditions}
+        else:
+            where = where_conditions[0]
+
         results = self.collection.query(
             query_texts=[instruction],
             n_results=top_k * 2,

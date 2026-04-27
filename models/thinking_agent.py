@@ -231,6 +231,24 @@ class ThinkingAgent:
         ):
             self.session_store.append_message(self.session_id, msg)
 
+    def _append_tool_message(self, tool_call_id, name, content) -> None:
+        self._append_message(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": name,
+                "content": str(content),
+            }
+        )
+
+    def _append_tool_error(self, tool_call, exc: Exception) -> None:
+        name = (tool_call.get("function") or {}).get("name") or "unknown_tool"
+        self._append_tool_message(
+            tool_call.get("id"),
+            name,
+            f"Tool call failed: {type(exc).__name__}: {exc}",
+        )
+
     def _normalize_assistant_message(self, msg):
         if isinstance(msg, dict):
             return msg
@@ -297,132 +315,114 @@ class ThinkingAgent:
                 final_return_status = None
                 
                 for tool_call in msg.get("tool_calls", []):
-                    name = (tool_call.get("function") or {}).get("name")
-                    args = json.loads((tool_call.get("function") or {}).get("arguments") or "{}")
-                    
-                    if name == "search_skill":
-                        keyword = args.get("keyword", "")
-                        yield ("RUNNING", f"\n[思考Agent 检索技能] 关键词: {keyword}")
-                        skill_content = _search_skill(keyword)
+                    try:
+                        name = (tool_call.get("function") or {}).get("name")
+                        args = json.loads((tool_call.get("function") or {}).get("arguments") or "{}")
                         
-                        self._append_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": name,
-                            "content": str(skill_content)
-                        })
-                    elif name == "execute_subtask":
-                        instruction = args.get("instruction", "")
-                        yield ("RUNNING", f"\n[思考Agent 决策] 委派子任务 -> {instruction}")
-                        worker = ExecutionAgent(
-                            self.client,
-                            self.model,
-                            session_id=self.session_id,
-                            interaction_handler=self.interaction_handler,
-                        )
-                        
-                        # 消费 ExecutionAgent 的流式输出
-                        worker_gen = worker.run_stream(instruction)
-                        try:
-                            while True:
-                                log_msg = next(worker_gen)
-                                yield ("RUNNING", log_msg)
-                        except StopIteration as e:
-                            result = e.value
-                        
-                        self._append_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": name,
-                            "content": result
-                        })
-                    elif name == "ask_user_for_help":
-                        question = args.get("question", "")
-                        yield ("RUNNING", f"\n[思考Agent 遇到困难求助] {question}")
-                        
-                        user_reply = yield ("ASK_USER", question)
-                        
-                        self._append_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": name,
-                            "content": f"用户提供的思路/回答: {user_reply}"
-                        })
-                    elif name == "submit_plan":
-                        plan = args.get("plan", "")
-                        yield ("RUNNING", f"\n=== [思考Agent 规划完成] 提交计划给 DAG Agent ===\n{plan}")
-                        
-                        from .dag_agent import DAGAgent
-                        dag_agent = DAGAgent(self.client, self.model)
-                        dag_gen = dag_agent.generate_dag_stream(plan)
-                        
-                        tasks = []
-                        try:
-                            while True:
-                                status, payload = next(dag_gen)
-                                if status == "RUNNING":
-                                    yield ("RUNNING", payload)
-                                elif status == "FINISHED":
-                                    tasks = payload
-                                    break
-                        except StopIteration as e:
-                            if e.value is not None:
-                                tasks = e.value
-                        
-                        self._append_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": name,
-                            "content": "计划已由 DAG Agent 成功转化为 DAG 图并提交执行。"
-                        })
-                        
-                        final_return_status = "FINISHED"
-                        final_return_payload = tasks
-                    elif name == "continue_task":
-                        yield ("RUNNING", "\n=== [思考Agent 复盘完成] 维持原DAG计划，继续执行 ===")
-                        
-                        self._append_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": name,
-                            "content": "维持原计划继续执行"
-                        })
-                        
-                        final_return_status = "FINISHED"
-                        final_return_payload = "CONTINUE"
-                    elif name == "finish_task":
-                        final_answer = args.get("final_answer", "")
-                        yield ("RUNNING", "\n=== [思考Agent 完成] 所有任务已完成 ===")
-                        
-                        self._append_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": name,
-                            "content": f"任务已完成，最终回复: {final_answer}"
-                        })
-                        
-                        # 记录经验 (直接完成类型任务)
-                        yield ("RUNNING", "\n[思考Agent] 开始请求经验总结 Agent 处理执行结果...")
-                        process_log_str = "Direct finish without DAG."
-                        for log_msg in self.experience_agent.process_experience_stream(
-                            "thinking",
-                            user_request,
-                            process_log_str,
-                            final_answer,
-                            session_id=self.session_id,
-                        ):
-                            yield ("RUNNING", f"  -> {log_msg}")
-                        
-                        final_return_status = "FINISHED"
-                        final_return_payload = final_answer
-                    else:
-                        yield ("RUNNING", f"\n[思考Agent 错误] 调用了未知工具: {name}")
-                        self._append_message({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id"),
-                            "name": name,
-                            "content": f"Error: Unknown tool '{name}'."
-                        })
+                        if name == "search_skill":
+                            keyword = args.get("keyword", "")
+                            yield ("RUNNING", f"\n[思考Agent 检索技能] 关键词: {keyword}")
+                            skill_content = _search_skill(keyword)
+                            self._append_tool_message(tool_call.get("id"), name, skill_content)
+                        elif name == "execute_subtask":
+                            instruction = args.get("instruction", "")
+                            yield ("RUNNING", f"\n[思考Agent 决策] 委派子任务 -> {instruction}")
+                            worker = ExecutionAgent(
+                                self.client,
+                                self.model,
+                                session_id=self.session_id,
+                                interaction_handler=self.interaction_handler,
+                            )
+                            
+                            # 消费 ExecutionAgent 的流式输出
+                            worker_gen = worker.run_stream(instruction)
+                            try:
+                                while True:
+                                    log_msg = next(worker_gen)
+                                    yield ("RUNNING", log_msg)
+                            except StopIteration as e:
+                                result = e.value
+                            
+                            self._append_tool_message(tool_call.get("id"), name, result)
+                        elif name == "ask_user_for_help":
+                            question = args.get("question", "")
+                            yield ("RUNNING", f"\n[思考Agent 遇到困难求助] {question}")
+                            
+                            user_reply = yield ("ASK_USER", question)
+                            self._append_tool_message(
+                                tool_call.get("id"),
+                                name,
+                                f"用户提供的思路/回答: {user_reply}",
+                            )
+                        elif name == "submit_plan":
+                            plan = args.get("plan", "")
+                            yield ("RUNNING", f"\n=== [思考Agent 规划完成] 提交计划给 DAG Agent ===\n{plan}")
+                            
+                            from .dag_agent import DAGAgent
+                            dag_agent = DAGAgent(self.client, self.model)
+                            dag_gen = dag_agent.generate_dag_stream(plan)
+                            
+                            tasks = []
+                            try:
+                                while True:
+                                    status, payload = next(dag_gen)
+                                    if status == "RUNNING":
+                                        yield ("RUNNING", payload)
+                                    elif status == "FINISHED":
+                                        tasks = payload
+                                        break
+                            except StopIteration as e:
+                                if e.value is not None:
+                                    tasks = e.value
+                            
+                            self._append_tool_message(
+                                tool_call.get("id"),
+                                name,
+                                "计划已由 DAG Agent 成功转化为 DAG 图并提交执行。",
+                            )
+                            
+                            final_return_status = "FINISHED"
+                            final_return_payload = tasks
+                        elif name == "continue_task":
+                            yield ("RUNNING", "\n=== [思考Agent 复盘完成] 维持原DAG计划，继续执行 ===")
+                            self._append_tool_message(tool_call.get("id"), name, "维持原计划继续执行")
+                            
+                            final_return_status = "FINISHED"
+                            final_return_payload = "CONTINUE"
+                        elif name == "finish_task":
+                            final_answer = args.get("final_answer", "")
+                            yield ("RUNNING", "\n=== [思考Agent 完成] 所有任务已完成 ===")
+                            self._append_tool_message(
+                                tool_call.get("id"),
+                                name,
+                                f"任务已完成，最终回复: {final_answer}",
+                            )
+                            
+                            # 记录经验 (直接完成类型任务)
+                            yield ("RUNNING", "\n[思考Agent] 开始请求经验总结 Agent 处理执行结果...")
+                            process_log_str = "Direct finish without DAG."
+                            for log_msg in self.experience_agent.process_experience_stream(
+                                "thinking",
+                                user_request,
+                                process_log_str,
+                                final_answer,
+                                session_id=self.session_id,
+                            ):
+                                yield ("RUNNING", f"  -> {log_msg}")
+                            
+                            final_return_status = "FINISHED"
+                            final_return_payload = final_answer
+                        else:
+                            yield ("RUNNING", f"\n[思考Agent 错误] 调用了未知工具: {name}")
+                            self._append_tool_message(
+                                tool_call.get("id"),
+                                name or "unknown_tool",
+                                f"Error: Unknown tool '{name}'.",
+                            )
+                    except Exception as e:
+                        name = (tool_call.get("function") or {}).get("name") or "unknown_tool"
+                        yield ("RUNNING", f"\n[思考Agent 工具调用失败] {name}: {type(e).__name__}: {e}")
+                        self._append_tool_error(tool_call, e)
                         
                 if final_return_status:
                     yield (final_return_status, final_return_payload)

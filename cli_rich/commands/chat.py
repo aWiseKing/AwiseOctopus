@@ -49,6 +49,26 @@ def _get_session_name(store: SessionStore, session_id: str) -> str:
     return ""
 
 
+def _build_info_content(ctx, store: SessionStore, config_mgr: ConfigManager, session_id: str, session_name: str) -> str:
+    ws = store.get_workspace(session_id)
+    if ws:
+        ws_display = f"[magenta]{ws}[/magenta]"
+    else:
+        default_ws = config_mgr.get("default_workspace")
+        if default_ws:
+            ws_display = f"[magenta]{default_ws}[/magenta] (默认)"
+        else:
+            ws_display = "[magenta]当前目录[/magenta] (未设置)"
+
+    return (
+        f"模型: [green]{ctx.model}[/green]\n"
+        f"接口: [green]{ctx.base_url}[/green]\n"
+        f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
+        f"工作区: {ws_display}\n"
+        f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
+    )
+
+
 @click.command("chat")
 @click.pass_obj
 def chat(ctx) -> None:
@@ -96,12 +116,7 @@ def chat(ctx) -> None:
         config_mgr.set("session_id", session_id)
 
     session_name = _get_session_name(store, session_id)
-    info_content = (
-        f"模型: [green]{ctx.model}[/green]\n"
-        f"接口: [green]{ctx.base_url}[/green]\n"
-        f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
-        f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
-    )
+    info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
     content = f"[bold cyan]{sword_shield_art}[/bold cyan]\n{info_content}"
     console.print(Panel(content, title="[bold cyan]AwiseOctopus[/bold cyan]", border_style="cyan", expand=True))
 
@@ -171,13 +186,15 @@ def chat(ctx) -> None:
                 table.add_column("Session ID", style="cyan")
                 table.add_column("Updated", style="green")
                 table.add_column("Msgs", justify="right")
+                table.add_column("Workspace", style="magenta")
                 for it in items:
                     star = "*" if it.get("is_current") else ""
                     name = it.get("name") or ""
                     sid = it.get("session_id") or ""
                     updated = it.get("updated_at") or ""
                     msgs = str(it.get("message_count") or 0)
-                    table.add_row(star, name, sid, updated, msgs)
+                    ws = it.get("workspace") or ""
+                    table.add_row(star, name, sid, updated, msgs, ws)
                 console.print(table)
                 continue
 
@@ -187,9 +204,10 @@ def chat(ctx) -> None:
                     console.print(Panel.fit("当前未选择 session。", border_style="yellow"))
                     continue
                 name = _get_session_name(store, sid)
+                ws = store.get_workspace(sid) or ""
                 console.print(
                     Panel.fit(
-                        f"name: {name}\nsession_id: {sid}\nshort: {_short_sid(sid)}",
+                        f"name: {name}\nsession_id: {sid}\nshort: {_short_sid(sid)}\nworkspace: {ws}",
                         title="当前 Session",
                         border_style="cyan",
                     )
@@ -213,12 +231,7 @@ def chat(ctx) -> None:
                         console, tool_name, args
                     ),
                 )
-                info_content = (
-                    f"模型: [green]{ctx.model}[/green]\n"
-                    f"接口: [green]{ctx.base_url}[/green]\n"
-                    f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
-                    f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
-                )
+                info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                 console.print(Panel.fit(f"已创建并切换到 session: {sid}", border_style="green"))
                 continue
 
@@ -244,18 +257,39 @@ def chat(ctx) -> None:
                         console, tool_name, args
                     ),
                 )
-                info_content = (
-                    f"模型: [green]{ctx.model}[/green]\n"
-                    f"接口: [green]{ctx.base_url}[/green]\n"
-                    f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
-                    f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
-                )
+                info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                 console.print(Panel.fit(f"已切换到 session: {sid}", border_style="green"))
+                continue
+
+            if sub == "workspace":
+                if len(parts) >= 3:
+                    import os
+                    new_ws = os.path.abspath(parts[2])
+                    store.set_workspace(session_id, new_ws)
+                    console.print(Panel.fit(f"已将当前 session 的工作区设置为: {new_ws}", border_style="green"))
+                    # Update info content
+                    info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
+                    # Recreate agent to pick up the new workspace limit in system prompt
+                    agent = ThinkingAgent(
+                        client,
+                        ctx.model,
+                        session_id=session_id,
+                        session_store=store,
+                        interaction_handler=lambda tool_name, args: _interaction_handler(
+                            console, tool_name, args
+                        ),
+                    )
+                else:
+                    ws = store.get_workspace(session_id)
+                    if ws:
+                        console.print(Panel.fit(f"当前 session 的工作区是: {ws}", border_style="cyan"))
+                    else:
+                        console.print(Panel.fit("当前 session 未设置专属工作区。", border_style="yellow"))
                 continue
 
             console.print(
                 Panel.fit(
-                    "用法: /session list | /session current | /session new [name] | /session use <name|session_id>",
+                    "用法: /session list | /session current | /session new [name] | /session use <name|session_id> | /session workspace [path]",
                     border_style="yellow",
                 )
             )

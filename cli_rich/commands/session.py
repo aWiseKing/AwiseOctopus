@@ -56,6 +56,7 @@ def list_sessions(ctx) -> None:
     table.add_column("Session ID", style="cyan")
     table.add_column("Updated", style="green")
     table.add_column("Msgs", justify="right")
+    table.add_column("Workspace", style="magenta")
 
     for it in items:
         star = "*" if it.get("is_current") else ""
@@ -63,9 +64,43 @@ def list_sessions(ctx) -> None:
         sid = it.get("session_id") or ""
         updated = it.get("updated_at") or ""
         msgs = str(it.get("message_count") or 0)
-        table.add_row(star, name, sid, updated, msgs)
+        ws = it.get("workspace") or ""
+        table.add_row(star, name, sid, updated, msgs, ws)
 
     ctx.console.print(table)
+
+
+@session.command("workspace")
+@click.argument("path", required=False)
+@click.option("--session-id", help="指定 session ID。不传则使用当前 session")
+@click.pass_obj
+def set_session_workspace(ctx, path: str | None, session_id: str | None):
+    """查看或设置会话的专属工作区"""
+    store = SessionStore()
+    config_mgr = ConfigManager()
+    
+    target_id = session_id or _sync_current_session(store, config_mgr)
+    if not target_id:
+        ctx.console.print("[red][错误] 当前无可用 session，请先创建或指定 --session-id。[/red]")
+        return
+        
+    resolved = store.resolve_session(target_id)
+    if not resolved:
+        ctx.console.print(f"[red][错误] 找不到指定的 session: {target_id}[/red]")
+        return
+
+    if path is None:
+        # 查看
+        ws = store.get_workspace(resolved)
+        if ws:
+            ctx.console.print(f"[green]Session {resolved} 的工作区是:[/green] {ws}")
+        else:
+            ctx.console.print(f"[yellow]Session {resolved} 当前未设置专属工作区。[/yellow]")
+    else:
+        import os
+        abs_path = os.path.abspath(path)
+        store.set_workspace(resolved, abs_path)
+        ctx.console.print(f"[green][成功] 已将 Session {resolved} 的工作区设置为:[/green] {abs_path}")
 
 
 @session.command("current")
@@ -80,13 +115,15 @@ def current(ctx) -> None:
 
     resolved = store.resolve_session(sid) or sid
     name = ""
+    ws = ""
     for it in store.list_sessions():
         if it.get("session_id") == resolved:
             name = it.get("name") or ""
+            ws = it.get("workspace") or ""
             break
 
     title = "当前 Session"
-    body = f"name: {name}\nsession_id: {resolved}\nshort: {_short_sid(resolved)}"
+    body = f"name: {name}\nsession_id: {resolved}\nshort: {_short_sid(resolved)}\nworkspace: {ws}"
     ctx.console.print(Panel.fit(body, title=title, border_style="cyan"))
 
 

@@ -53,6 +53,8 @@ class SessionStore:
                 cur.execute("ALTER TABLE sessions ADD COLUMN name TEXT")
             if "is_current" not in existing_cols:
                 cur.execute("ALTER TABLE sessions ADD COLUMN is_current INTEGER DEFAULT 0")
+            if "workspace" not in existing_cols:
+                cur.execute("ALTER TABLE sessions ADD COLUMN workspace TEXT")
 
             cur.execute(
                 """
@@ -155,13 +157,29 @@ class SessionStore:
             )
             self.conn.commit()
 
+    def get_workspace(self, session_id: str) -> str | None:
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute("SELECT workspace FROM sessions WHERE session_id = ? LIMIT 1", (session_id,))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+        return None
+
+    def set_workspace(self, session_id: str, workspace: str | None) -> None:
+        with self._lock:
+            self._ensure_session_row(session_id)
+            cur = self.conn.cursor()
+            cur.execute("UPDATE sessions SET workspace = ? WHERE session_id = ?", (workspace, session_id))
+            self.conn.commit()
+
     def list_sessions(self):
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(
                 """
                 SELECT s.session_id, s.name, s.is_current, s.created_at, s.updated_at,
-                       COALESCE(m.cnt, 0) AS message_count
+                       COALESCE(m.cnt, 0) AS message_count, s.workspace
                 FROM sessions s
                 LEFT JOIN (
                     SELECT session_id, COUNT(*) AS cnt
@@ -183,9 +201,65 @@ class SessionStore:
                     "created_at": row[3],
                     "updated_at": row[4],
                     "message_count": int(row[5] or 0),
+                    "workspace": row[6],
                 }
             )
         return items
+
+    def _sanitize_messages(self, messages: list[dict]) -> list[dict]:
+        sanitized = []
+        pending_assistant = None
+        pending_tools = []
+        pending_ids = set()
+        seen_tool_ids = set()
+        idx = 0
+
+        while idx < len(messages):
+            msg = messages[idx]
+            role = msg.get("role")
+
+            if pending_assistant is None:
+                tool_calls = msg.get("tool_calls") if role == "assistant" else None
+                expected_ids = {
+                    tc.get("id")
+                    for tc in (tool_calls or [])
+                    if isinstance(tc, dict) and tc.get("id")
+                }
+                if role == "assistant" and expected_ids:
+                    pending_assistant = msg
+                    pending_tools = []
+                    pending_ids = set(expected_ids)
+                    seen_tool_ids = set()
+                elif role != "tool":
+                    sanitized.append(msg)
+                idx += 1
+                continue
+
+            if role == "tool":
+                tool_call_id = msg.get("tool_call_id")
+                if tool_call_id in pending_ids and tool_call_id not in seen_tool_ids:
+                    pending_tools.append(msg)
+                    seen_tool_ids.add(tool_call_id)
+                    if seen_tool_ids == pending_ids:
+                        sanitized.append(pending_assistant)
+                        sanitized.extend(pending_tools)
+                        pending_assistant = None
+                        pending_tools = []
+                        pending_ids = set()
+                        seen_tool_ids = set()
+                idx += 1
+                continue
+
+            should_reprocess = role == "user"
+            pending_assistant = None
+            pending_tools = []
+            pending_ids = set()
+            seen_tool_ids = set()
+            if not should_reprocess:
+                idx += 1
+            continue
+
+        return sanitized
 
     def load_messages(self, session_id: str):
         with self._lock:
@@ -210,7 +284,7 @@ class SessionStore:
                 continue
             if isinstance(obj, dict):
                 msgs.append(obj)
-        return msgs
+        return self._sanitize_messages(msgs)
 
     def append_message(self, session_id: str, message: dict) -> None:
         raw = json.dumps(message, ensure_ascii=False)

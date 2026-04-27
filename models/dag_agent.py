@@ -140,6 +140,16 @@ class DAGAgent:
             }
         ]
 
+    def _append_tool_message(self, messages, tool_call_id, name, content) -> None:
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": name,
+                "content": str(content),
+            }
+        )
+
     def generate_dag_stream(self, plan):
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -158,38 +168,47 @@ class DAGAgent:
             
             if msg.tool_calls:
                 for tool_call in msg.tool_calls:
-                    name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
-                    
-                    if name == "create_task":
-                        tasks = args.get("tasks", [])
-                        create_task_schema = next((t["function"]["parameters"] for t in self.tools_schema if t["function"]["name"] == "create_task"), None)
+                    name = getattr(tool_call.function, "name", None) or "unknown_tool"
+                    try:
+                        args = json.loads(tool_call.function.arguments)
                         
-                        is_valid, error_msg = _validate_dag_tasks(tasks, create_task_schema)
-                        if not is_valid:
-                            yield ("RUNNING", f"\n[DAG Agent 校验失败] DAG图存在错误: {error_msg}")
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "name": name,
-                                "content": f"Failed to create task due to validation error: {error_msg}. 你必须修复这个 DAG 图的异常并重新调用 `create_task`。"
-                            })
-                            continue
+                        if name == "create_task":
+                            tasks = args.get("tasks", [])
+                            create_task_schema = next((t["function"]["parameters"] for t in self.tools_schema if t["function"]["name"] == "create_task"), None)
                             
-                        yield ("RUNNING", f"\n=== [DAG Agent 转换完成] 输出DAG任务图: 共 {len(tasks)} 个任务 ===")
-                        dag_json = json.dumps(tasks, ensure_ascii=False, indent=2)
-                        yield ("RUNNING", f"\n[DAG 任务图详情]:\n{dag_json}")
-                        
-                        yield ("FINISHED", tasks)
-                        return tasks
-                    else:
-                        yield ("RUNNING", f"\n[DAG Agent 错误] 调用了未知工具: {name}")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": name,
-                            "content": f"Error: Unknown tool '{name}'."
-                        })
+                            is_valid, error_msg = _validate_dag_tasks(tasks, create_task_schema)
+                            if not is_valid:
+                                yield ("RUNNING", f"\n[DAG Agent 校验失败] DAG图存在错误: {error_msg}")
+                                self._append_tool_message(
+                                    messages,
+                                    tool_call.id,
+                                    name,
+                                    f"Failed to create task due to validation error: {error_msg}. 你必须修复这个 DAG 图的异常并重新调用 `create_task`。",
+                                )
+                                continue
+                                
+                            yield ("RUNNING", f"\n=== [DAG Agent 转换完成] 输出DAG任务图: 共 {len(tasks)} 个任务 ===")
+                            dag_json = json.dumps(tasks, ensure_ascii=False, indent=2)
+                            yield ("RUNNING", f"\n[DAG 任务图详情]:\n{dag_json}")
+                            
+                            yield ("FINISHED", tasks)
+                            return tasks
+                        else:
+                            yield ("RUNNING", f"\n[DAG Agent 错误] 调用了未知工具: {name}")
+                            self._append_tool_message(
+                                messages,
+                                tool_call.id,
+                                name,
+                                f"Error: Unknown tool '{name}'.",
+                            )
+                    except Exception as e:
+                        yield ("RUNNING", f"\n[DAG Agent 工具调用失败] {name}: {type(e).__name__}: {e}")
+                        self._append_tool_message(
+                            messages,
+                            tool_call.id,
+                            name,
+                            f"Tool call failed: {type(e).__name__}: {e}",
+                        )
             else:
                 if msg.content:
                     yield ("RUNNING", f"\n[DAG Agent 自言自语] {msg.content}")
