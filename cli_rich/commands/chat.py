@@ -15,6 +15,7 @@ from rich.table import Table
 
 from models import DAGExecutor, ThinkingAgent
 from models.config_manager import ConfigManager
+from models.interaction import create_approval_handler
 from models.session_store import SessionStore
 
 from .run import _consume_run_stream, _ensure_api_key, _interaction_handler
@@ -120,14 +121,16 @@ def chat(ctx) -> None:
     content = f"[bold cyan]{sword_shield_art}[/bold cyan]\n{info_content}"
     console.print(Panel(content, title="[bold cyan]AwiseOctopus[/bold cyan]", border_style="cyan", expand=True))
 
+    approval_handler = create_approval_handler(
+        lambda request: _interaction_handler(console, request),
+        session_id=session_id,
+    )
     agent = ThinkingAgent(
         client,
         ctx.model,
         session_id=session_id,
         session_store=store,
-        interaction_handler=lambda tool_name, args: _interaction_handler(
-            console, tool_name, args
-        ),
+        interaction_handler=approval_handler,
     )
 
     current_mode = "chat"
@@ -222,14 +225,16 @@ def chat(ctx) -> None:
                 config_mgr.set("session_id", sid)
                 session_id = sid
                 session_name = _get_session_name(store, session_id)
+                approval_handler = create_approval_handler(
+                    lambda request: _interaction_handler(console, request),
+                    session_id=session_id,
+                )
                 agent = ThinkingAgent(
                     client,
                     ctx.model,
                     session_id=session_id,
                     session_store=store,
-                    interaction_handler=lambda tool_name, args: _interaction_handler(
-                        console, tool_name, args
-                    ),
+                    interaction_handler=approval_handler,
                 )
                 info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                 console.print(Panel.fit(f"已创建并切换到 session: {sid}", border_style="green"))
@@ -248,14 +253,16 @@ def chat(ctx) -> None:
                 config_mgr.set("session_id", sid)
                 session_id = sid
                 session_name = _get_session_name(store, session_id)
+                approval_handler = create_approval_handler(
+                    lambda request: _interaction_handler(console, request),
+                    session_id=session_id,
+                )
                 agent = ThinkingAgent(
                     client,
                     ctx.model,
                     session_id=session_id,
                     session_store=store,
-                    interaction_handler=lambda tool_name, args: _interaction_handler(
-                        console, tool_name, args
-                    ),
+                    interaction_handler=approval_handler,
                 )
                 info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                 console.print(Panel.fit(f"已切换到 session: {sid}", border_style="green"))
@@ -275,9 +282,7 @@ def chat(ctx) -> None:
                         ctx.model,
                         session_id=session_id,
                         session_store=store,
-                        interaction_handler=lambda tool_name, args: _interaction_handler(
-                            console, tool_name, args
-                        ),
+                        interaction_handler=approval_handler,
                     )
                 else:
                     ws = store.get_workspace(session_id)
@@ -320,9 +325,7 @@ def chat(ctx) -> None:
                     client,
                     ctx.model,
                     agent,
-                    interaction_handler=lambda tool_name, args: _interaction_handler(
-                        console, tool_name, args
-                    ),
+                    interaction_handler=approval_handler,
                 )
                 results = asyncio.run(executor.execute())
                 console.print(Panel(JSON.from_data(results), title="[bold cyan]DAG 最终执行结果[/bold cyan]", border_style="cyan", expand=True))

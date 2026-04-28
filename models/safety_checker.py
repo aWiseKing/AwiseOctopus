@@ -1,4 +1,48 @@
 import json
+import re
+
+
+_SHELL_SAFE_PATTERNS = [
+    r"^\s*(?:dir|ls|pwd)\s*$",
+    r"^\s*(?:echo)\b",
+    r"^\s*(?:type|cat|head|tail)\b",
+    r"^\s*(?:where|which)\b",
+    r"^\s*(?:find)\b",
+    r"^\s*git\s+status(?:\s+--short)?\s*$",
+    r"^\s*git\s+diff(?:\s+--stat)?(?:\s+--cached)?\s*$",
+    r"^\s*git\s+log\b.*$",
+    r"^\s*(?:python|python3|py|pip|pip3|node|npm)\s+(?:--version|-V)\s*$",
+    r"^\s*(?:pip|pip3)\s+show\b.*$",
+    r"^\s*npm\s+list\b.*$",
+    r"^\s*Get-(?:ChildItem|Content|Location)\b.*$",
+]
+
+_SHELL_UNSAFE_PATTERNS = [
+    r"\b(?:rm|rmdir|del|erase)\b",
+    r"\bRemove-Item\b",
+    r"\b(?:Set-Content|Add-Content|Out-File|Set-ItemProperty|New-Item)\b",
+    r"(?<![0-9])>>?",
+    r"\b(?:pip|pip3|npm|pnpm|yarn|apt|apt-get|brew|choco)\s+(?:install|uninstall|remove|update|upgrade)\b",
+    r"\b(?:curl|wget|Invoke-WebRequest|iwr)\b",
+    r"\|\s*(?:sh|bash|pwsh|powershell)\b",
+    r"\b(?:taskkill|Stop-Process|kill|pkill|sc|systemctl|setx)\b",
+]
+
+
+def _is_shell_command_safe(args) -> bool | None:
+    command = str((args or {}).get("command") or "").strip()
+    if not command:
+        return False
+
+    for pattern in _SHELL_UNSAFE_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            return False
+
+    for pattern in _SHELL_SAFE_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            return True
+
+    return None
 
 def is_action_safe(client, model, tool_name, args):
     """
@@ -12,8 +56,14 @@ def is_action_safe(client, model, tool_name, args):
             use_sandbox = use_sandbox.lower() == 'true'
         if use_sandbox:
             return True
-            
-    # 2. LLM 动态分析
+
+    # 2. Shell 工具的本地快速判定
+    if tool_name == "shell_command":
+        shell_safe = _is_shell_command_safe(args)
+        if shell_safe is not None:
+            return shell_safe
+
+    # 3. LLM 动态分析
     prompt = f"""你是一个安全审查专家。请分析以下工具调用是否属于"仅仅获取信息、读取数据或安全的纯计算"，而不包含任何对系统的修改、删除或破坏性操作。
 
 工具名称: {tool_name}

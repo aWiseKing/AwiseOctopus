@@ -31,7 +31,8 @@ def get_sandbox(use_sandbox=True):
         },
         "required": ["code"]
     },
-    requires_confirmation=True
+    requires_confirmation=True,
+    action_kind="code_execution",
 )
 def python_eval(code, use_sandbox=True):
     mode_str = "沙箱模式(Docker)" if use_sandbox else "宿主机实操模式(原生PC)"

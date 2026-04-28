@@ -93,7 +93,9 @@ class ThinkingAgent:
         self.model = model
         self.session_id = session_id
         self.session_store = session_store
-        self.interaction_handler = resolve_interaction_handler(interaction_handler)
+        self.interaction_handler = resolve_interaction_handler(
+            interaction_handler, session_id=session_id
+        )
         self.memory_manager = ExperienceMemoryManager()
         self.experience_agent = ExperienceAgent(client, model)
         
@@ -278,9 +280,16 @@ class ThinkingAgent:
     def _messages_for_llm(self, injected_system_message: str | None):
         if not injected_system_message:
             return self.messages
+
         base = list(self.messages)
-        base.insert(1, {"role": "system", "content": injected_system_message})
-        return base
+        if base and isinstance(base[0], dict) and base[0].get("role") == "system":
+            merged_first = dict(base[0])
+            merged_first["content"] = (
+                f"{base[0].get('content', '')}\n\n{injected_system_message}"
+            ).strip()
+            return [merged_first, *base[1:]]
+
+        return [{"role": "system", "content": injected_system_message}, *base]
         
     def run_stream(self, user_request):
         yield ("RUNNING", "\n=== [思考Agent 启动] 开始分析任务 ===")
@@ -305,7 +314,8 @@ class ThinkingAgent:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=self._messages_for_llm(injected_system_message),
-                tools=self.thinking_tools_schema
+                tools=self.thinking_tools_schema,
+                tool_choice="auto",
             )
             msg = self._normalize_assistant_message(response.choices[0].message)
             self._append_message(msg)

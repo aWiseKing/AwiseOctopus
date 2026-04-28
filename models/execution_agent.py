@@ -1,5 +1,6 @@
 import json
 from .tools import registry
+from .tool_runtime import prepare_tool_args, resolve_workspace_for_session
 from .experience_memory import ExperienceMemoryManager
 from .experience_agent import ExperienceAgent
 from .interaction import resolve_interaction_handler
@@ -9,19 +10,14 @@ class ExecutionAgent:
         self.client = client
         self.model = model
         self.session_id = session_id
-        self.interaction_handler = resolve_interaction_handler(interaction_handler)
+        self.interaction_handler = resolve_interaction_handler(
+            interaction_handler, session_id=session_id
+        )
         self.memory_manager = ExperienceMemoryManager()
         self.experience_agent = ExperienceAgent(client, model)
         
         self.workspace = None
-        if self.session_id:
-            from .session_store import SessionStore
-            store = SessionStore()
-            self.workspace = store.get_workspace(self.session_id)
-            store.close()
-        if not self.workspace:
-            from models.config_manager import ConfigManager
-            self.workspace = ConfigManager().get("default_workspace")
+        self.workspace = resolve_workspace_for_session(self.session_id)
             
         self.system_prompt = (
             "你是一个执行Agent（Worker）。你的任务是利用手头的技能工具，精准地完成思考Agent交给你的具体任务指令。\n"
@@ -48,6 +44,23 @@ class ExecutionAgent:
             }
         )
 
+    def _build_messages(self, instruction, hint=None):
+        system_content = self.system_prompt
+        if hint:
+            system_content = (
+                f"{system_content}\n\n"
+                "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
+                f"{hint}\n"
+                "〖经验参考结束〗"
+            )
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": instruction},
+        ]
+
+    def _prepare_tool_args(self, name, args):
+        return prepare_tool_args(name, args, workspace=self.workspace)
+
     def run_stream(self, instruction):
         yield f"  >>> [执行Agent 启动] 接收到子任务: {instruction}"
 
@@ -56,31 +69,19 @@ class ExecutionAgent:
             "execution", instruction, session_id=self.session_id
         )
 
-        messages = [{"role": "system", "content": self.system_prompt}]
         if hint:
             yield f"  >>> [执行Agent 经验记忆] 检索到相关历史经验，已注入上下文。"
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
-                        f"{hint}\n"
-                        "〖经验参考结束〗"
-                    ),
-                }
-            )
-
-        messages.append({"role": "user", "content": instruction})
+        messages = self._build_messages(instruction, hint=hint)
 
             
         process_log = []
         
         while True:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=registry.schemas if registry.schemas else None
-            )
+            request_kwargs = {"model": self.model, "messages": messages}
+            if registry.schemas:
+                request_kwargs["tools"] = registry.schemas
+                request_kwargs["tool_choice"] = "auto"
+            response = self.client.chat.completions.create(**request_kwargs)
             msg = response.choices[0].message
             
             if msg.tool_calls:
@@ -89,10 +90,15 @@ class ExecutionAgent:
                     name = getattr(tool_call.function, "name", None) or "unknown_tool"
                     try:
                         args = json.loads(tool_call.function.arguments)
+                        args = self._prepare_tool_args(name, args)
                         yield f"    - [执行Agent 调用技能] {name}({args})"
                         
                         skill_info = registry.get_skill_info(name)
                         if skill_info and skill_info.get("requires_confirmation"):
+                            from .interaction import (
+                                format_approval_status,
+                                format_rejection_message,
+                            )
                             from .safety_checker import is_action_safe
                             yield f"    - [执行Agent 安全审查] 正在分析 {name} 操作安全性..."
                             is_safe = is_action_safe(self.client, self.model, name, args)
@@ -103,11 +109,14 @@ class ExecutionAgent:
                             else:
                                 if self.interaction_handler:
                                     yield f"    - [执行Agent 暂停] 发现高危操作，等待用户确认 {name}..."
-                                    user_reply = self.interaction_handler(name, args)
-                                    if str(user_reply).strip().lower() in ['y', 'yes', '允许', 'ok']:
+                                    decision = self.interaction_handler(name, args)
+                                    status_text = format_approval_status(decision, name)
+                                    if status_text:
+                                        yield f"    - [执行Agent 授权结果] {status_text}"
+                                    if decision.allow_current:
                                         result = registry.execute(name, args)
                                     else:
-                                        result = f"用户拒绝了该操作，用户的建议/原因是: {user_reply}"
+                                        result = format_rejection_message(decision)
                                 else:
                                     yield f"    - [执行Agent 警告] 高危操作 {name} 需要用户确认，但未配置交互处理器，默认拒绝执行。"
                                     result = "操作被拒绝：未配置用户确认交互机制。"

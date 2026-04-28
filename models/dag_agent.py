@@ -161,7 +161,8 @@ class DAGAgent:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                tools=self.tools_schema
+                tools=self.tools_schema,
+                tool_choice="auto",
             )
             msg = response.choices[0].message
             messages.append(msg)

@@ -12,6 +12,7 @@
 
 - **双 Agent 架构**：在 `ThinkingAgent`（负责任务拆解、规划与策略调整）与 `ExecutionAgent`（负责调用工具和实际执行）之间实现了健壮的分工。
 - **动态工具注册机制**：基于装饰器 (`@registry.register`) 和 JSON Schema 的自动化工具注册系统。开发者只需极少代码即可轻松扩展执行工具。
+- **Shell 命令执行工具**：内置 `shell_command` 单次命令工具，支持 Windows PowerShell 与类 Unix shell。默认对只读命令自动放行，对写入、删除、安装等高危命令继续走确认流程。
 - **极速本地搜索（Windows）**：内置 `search_local_file` 工具通过 `ctypes` 深度集成 **Everything SDK**（`Everything64.dll`/`Everything32.dll`），在 Everything 客户端运行时可实现毫秒级本地文件发现。
 - **专家技能（Skill）机制**：灵活的技能加载系统（位于 `skills/` 目录）。Manager 可动态搜索并加载特定领域的 Prompt 或 SOP（如数据分析、前端开发等），指导复杂任务。
 - **容错与自动修正**：思考 Agent 会主动评估任务结果。如果常规工具失败，它可以转换策略——比如使用 `python_eval` 工具编写和运行 Python 代码，或者在遇到困境时使用 `ask_user_for_help` 呼叫人类协助。
@@ -33,6 +34,7 @@
 3. **执行工具库（`models/tools/`）**：
    - `registry.py`：负责工具的管理和调度。
    - `python_eval.py`：安全、动态地执行 Python 代码。
+   - `shell_command.py`：执行单次 shell 命令，默认限制在当前 session workspace / 默认工作区中运行。
    - `search_local_file.py`：基于 Everything SDK 的极速本地搜索。
    - `web_search.py`：集成搜索引擎功能。
    - `calc.py`：基础计算器。

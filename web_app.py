@@ -2,6 +2,7 @@ import os
 import streamlit as st
 from openai import OpenAI
 from models.config_manager import ConfigManager
+from models.interaction import create_approval_handler
 
 # 从重构后的 models 包导入Session
 from models import Session
@@ -30,6 +31,22 @@ def get_openai_client():
     return OpenAI(api_key=api_key, base_url=base_url), MODEL
 
 client, MODEL = get_openai_client()
+
+
+def web_interaction_handler(request):
+    import threading
+
+    req = {
+        "tool_name": request["tool_name"],
+        "args": request["args"],
+        "is_delete_operation": request["is_delete_operation"],
+        "session_choice_enabled": request["session_choice_enabled"],
+        "event": threading.Event(),
+        "response": None,
+    }
+    st.session_state.interaction_requests.append(req)
+    req["event"].wait()
+    return req["response"]
 
 # -----------------
 # Session State 初始化
@@ -67,9 +84,21 @@ if "summary_text" not in st.session_state:
 if "summary_generator" not in st.session_state:
     st.session_state.summary_generator = None
 
+if "approval_handler" not in st.session_state:
+    st.session_state.approval_handler = create_approval_handler(
+        web_interaction_handler
+    )
+
 if "session" not in st.session_state:
     # 实例化持久的 Session 维持多轮上下文
-    st.session_state.session = Session(client, MODEL)
+    st.session_state.session = Session(
+        client,
+        MODEL,
+        interaction_handler=st.session_state.approval_handler,
+    )
+else:
+    st.session_state.session.interaction_handler = st.session_state.approval_handler
+    st.session_state.session.agent.interaction_handler = st.session_state.approval_handler
 
 # -----------------
 # 渲染历史消息
@@ -162,17 +191,6 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                         def update_dag(status_data):
                             st.session_state.dag_status_data = status_data
 
-                        def web_interaction_handler(tool_name, args):
-                            req = {
-                                "tool_name": tool_name,
-                                "args": args,
-                                "event": threading.Event(),
-                                "response": None
-                            }
-                            st.session_state.interaction_requests.append(req)
-                            req["event"].wait()
-                            return req["response"]
-
                         def run_dag_thread(session_obj, app_session):
                             # The executor runs in a new event loop
                             try:
@@ -181,7 +199,7 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                                 results = loop.run_until_complete(session_obj.execute_dag_async(
                                     payload,
                                     on_status_change=update_dag,
-                                    interaction_handler=web_interaction_handler
+                                    interaction_handler=app_session.approval_handler
                                 ))
                                 app_session.dag_results = results
                             except Exception as e:
@@ -237,9 +255,17 @@ if st.session_state.dag_running or st.session_state.dag_results is not None:
         req = st.session_state.interaction_requests[0] # 取出第一个请求
         st.warning(f"**Agent 请求确认高危操作:** `{req['tool_name']}`")
         st.json(req['args'])
+        if req["is_delete_operation"]:
+            st.info("这是删除类操作。即使选择 `session`，也只会同意当前这一次，不会开启本对话默认同意。")
+        else:
+            st.info("选择 `session` 后，本对话后续非删除类高危操作将默认同意。")
         
         with st.form(key=f"confirm_form_{id(req)}"):
-            user_decision = st.text_input("是否允许？(输入 'y' 允许，或者输入修改建议/拒绝原因)")
+            user_decision = st.selectbox(
+                "请选择授权方式",
+                options=["session", "only", "no"],
+                index=2,
+            )
             submitted = st.form_submit_button("提交决定")
             if submitted:
                 req["response"] = user_decision

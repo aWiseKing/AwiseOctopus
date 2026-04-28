@@ -13,20 +13,33 @@ from rich.prompt import Prompt
 
 from models import DAGExecutor, ThinkingAgent
 from models.config_manager import ConfigManager
+from models.interaction import create_approval_handler
 from models.session_store import SessionStore
 
 
-def _interaction_handler(console, tool_name: str, args: dict) -> str:
+def _interaction_handler(console, request: dict) -> str:
     console.print(
         Panel.fit(
-            f"Agent 准备执行高危操作：{tool_name}",
+            f"Agent 准备执行高危操作：{request['tool_name']}",
             title="确认高危操作",
             border_style="red",
         )
     )
-    console.print(JSON.from_data(args))
-    console.print("\n[red]*[/red] 是否允许？输入 y 允许，或输入修改建议/拒绝原因 (默认: n):")
-    return console.input("[bold cyan]>[/bold cyan] ").strip() or "n"
+    console.print(JSON.from_data(request["args"]))
+    if request["is_delete_operation"]:
+        console.print(
+            "\n[yellow]提示：这是删除类操作。即使选择 `session`，也只会同意当前这一次，不会开启会话默认同意。[/yellow]"
+        )
+    console.print(
+        "\n[red]*[/red] 请选择授权方式：`session` / `only` / `no` (默认: no)"
+    )
+    return Prompt.ask(
+        "[bold cyan]>[/bold cyan]",
+        choices=["session", "only", "no"],
+        default="no",
+        show_choices=False,
+        console=console,
+    )
 
 
 def _ensure_api_key(ctx) -> str:
@@ -154,14 +167,16 @@ def run(
 
     api_key = _ensure_api_key(ctx)
     client = OpenAI(api_key=api_key, base_url=ctx.base_url)
+    approval_handler = create_approval_handler(
+        lambda request: _interaction_handler(console, request),
+        session_id=session_id,
+    )
     agent = ThinkingAgent(
         client,
         ctx.model,
         session_id=session_id,
         session_store=store,
-        interaction_handler=lambda tool_name, args: _interaction_handler(
-            console, tool_name, args
-        ),
+        interaction_handler=approval_handler,
     )
     payload = _consume_run_stream(console, agent.run_stream(text), allow_interaction=sys.stdin.isatty())
 
@@ -172,9 +187,7 @@ def run(
             client,
             ctx.model,
             agent,
-            interaction_handler=lambda tool_name, args: _interaction_handler(
-                console, tool_name, args
-            ),
+            interaction_handler=approval_handler,
         )
         results = asyncio.run(executor.execute())
         console.print(Panel.fit("DAG 最终执行结果", border_style="cyan"))

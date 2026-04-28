@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -41,6 +42,39 @@ class FakeClient:
 
 
 class TestAgentToolCallSequence(unittest.TestCase):
+    def test_thinking_agent_merges_injected_experience_into_single_system_message(self) -> None:
+        client = FakeClient(
+            [
+                make_response(
+                    make_message(
+                        tool_calls=[
+                            make_tool_call(
+                                "call_finish",
+                                "finish_task",
+                                '{"final_answer":"ok"}',
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        agent = ThinkingAgent(client, "fake-model")
+
+        with patch.object(
+            agent.memory_manager, "search_experience", return_value="历史经验"
+        ), patch.object(
+            agent.experience_agent, "process_experience_stream", return_value=[]
+        ):
+            result = agent.run("hello")
+
+        self.assertEqual(result, "ok")
+        first_call_messages = client.chat.completions.calls[0]["messages"]
+        system_messages = [
+            msg for msg in first_call_messages if isinstance(msg, dict) and msg.get("role") == "system"
+        ]
+        self.assertEqual(len(system_messages), 1)
+        self.assertIn("历史经验", system_messages[0].get("content", ""))
+
     def test_thinking_agent_appends_tool_message_after_json_error(self) -> None:
         client = FakeClient(
             [
@@ -115,6 +149,65 @@ class TestAgentToolCallSequence(unittest.TestCase):
                     and msg.get("tool_call_id") == "call_exec"
                     and "Tool call failed" in msg.get("content", "")
                 )
+                for msg in second_call_messages
+            )
+        )
+
+    def test_execution_agent_merges_injected_experience_into_single_system_message(self) -> None:
+        client = FakeClient([make_response(make_message(content="done"))])
+        agent = ExecutionAgent(client, "fake-model")
+
+        with patch.object(
+            agent.memory_manager, "search_experience", return_value="历史经验"
+        ), patch.object(
+            agent.experience_agent, "process_experience_stream", return_value=[]
+        ):
+            result = agent.run("do it")
+
+        self.assertEqual(result, "done")
+        first_call_messages = client.chat.completions.calls[0]["messages"]
+        system_messages = [
+            msg for msg in first_call_messages if isinstance(msg, dict) and msg.get("role") == "system"
+        ]
+        self.assertEqual(len(system_messages), 1)
+        self.assertIn("历史经验", system_messages[0].get("content", ""))
+
+    def test_execution_agent_appends_tool_message_after_shell_arg_validation_error(self) -> None:
+        client = FakeClient(
+            [
+                make_response(
+                    make_message(
+                        tool_calls=[
+                            make_tool_call(
+                                "call_shell",
+                                "shell_command",
+                                '{"command":"git status","cwd":"..\\\\outside"}',
+                            )
+                        ]
+                    )
+                ),
+                make_response(make_message(content="done")),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as workspace:
+            agent = ExecutionAgent(client, "fake-model")
+            agent.workspace = workspace
+
+            with patch.object(
+                agent.memory_manager, "search_experience", return_value=None
+            ), patch.object(
+                agent.experience_agent, "process_experience_stream", return_value=[]
+            ):
+                result = agent.run("check workspace")
+
+        self.assertEqual(result, "done")
+        second_call_messages = client.chat.completions.calls[1]["messages"]
+        self.assertTrue(
+            any(
+                isinstance(msg, dict)
+                and msg.get("role") == "tool"
+                and msg.get("tool_call_id") == "call_shell"
+                and "Tool call failed" in msg.get("content", "")
                 for msg in second_call_messages
             )
         )

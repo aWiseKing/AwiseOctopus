@@ -3,6 +3,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 from .execution_agent import ExecutionAgent
 from .interaction import resolve_interaction_handler
+from .tool_runtime import prepare_tool_args, resolve_workspace_for_session
 
 class DAGExecutor:
     def __init__(self, tasks, client, model, thinking_agent, on_status_change=None, interaction_handler=None):
@@ -10,7 +11,13 @@ class DAGExecutor:
         self.model = model
         self.thinking_agent = thinking_agent
         self.on_status_change = on_status_change
-        self.interaction_handler = resolve_interaction_handler(interaction_handler)
+        self.interaction_handler = resolve_interaction_handler(
+            interaction_handler,
+            session_id=getattr(thinking_agent, "session_id", None),
+        )
+        self.workspace = resolve_workspace_for_session(
+            getattr(thinking_agent, "session_id", None)
+        )
         
         # 记录所有的任务对象 {task_id: task_dict}
         self.all_tasks = {t['id']: t for t in tasks}
@@ -53,10 +60,15 @@ class DAGExecutor:
         if task_type == 'tool':
             from .tools import registry
             tool_name = task_data.get('tool')
-            tool_args = task_data.get('input', {})
+            tool_args = prepare_tool_args(
+                tool_name,
+                task_data.get('input', {}),
+                workspace=self.workspace,
+            )
             
             skill_info = registry.get_skill_info(tool_name)
             if skill_info and skill_info.get("requires_confirmation"):
+                from .interaction import format_approval_status, format_rejection_message
                 from .safety_checker import is_action_safe
                 print(f"\n[DAG 执行器] 正在分析 {tool_name} 操作安全性...")
                 is_safe = await asyncio.to_thread(is_action_safe, self.client, self.model, tool_name, tool_args)
@@ -67,11 +79,16 @@ class DAGExecutor:
                 else:
                     if self.interaction_handler:
                         print(f"\n[DAG 执行器] 发现高危操作，等待用户确认 {tool_name}...")
-                        user_reply = await asyncio.to_thread(self.interaction_handler, tool_name, tool_args)
-                        if str(user_reply).strip().lower() in ['y', 'yes', '允许', 'ok']:
+                        decision = await asyncio.to_thread(
+                            self.interaction_handler, tool_name, tool_args
+                        )
+                        status_text = format_approval_status(decision, tool_name)
+                        if status_text:
+                            print(f"\n[DAG 执行器] {status_text}")
+                        if decision.allow_current:
                             result = await asyncio.to_thread(registry.execute, tool_name, tool_args)
                         else:
-                            result = f"用户拒绝了该操作，用户的建议/原因是: {user_reply}"
+                            result = format_rejection_message(decision)
                     else:
                         print(f"\n[DAG 执行器] 警告: 高危操作 {tool_name} 需要确认，但未配置交互机制，拒绝执行。")
                         result = "操作被拒绝：未配置用户确认交互机制。"

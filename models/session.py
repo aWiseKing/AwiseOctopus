@@ -13,7 +13,9 @@ class Session:
         self.session_id = session_id or str(uuid.uuid4())
         self.client = client
         self.model = model
-        self.interaction_handler = resolve_interaction_handler(interaction_handler)
+        self.interaction_handler = resolve_interaction_handler(
+            interaction_handler, session_id=self.session_id
+        )
         self.store = SessionStore()
         self.agent = ThinkingAgent(
             client,

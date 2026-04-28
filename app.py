@@ -4,6 +4,7 @@ import json
 from openai import OpenAI
 
 from models.config_manager import ConfigManager
+from models.interaction import create_approval_handler
 # 从我们重构后的models包导入Session
 from models import Session
 
@@ -23,11 +24,14 @@ client = OpenAI(
 # -----------------
 # 交互处理函数
 # -----------------
-def cli_interaction_handler(tool_name, args):
-    print(f"\n[⚠️ 警告] Agent 准备执行高危操作 `{tool_name}`，参数为:")
-    print(json.dumps(args, indent=2, ensure_ascii=False))
-    user_reply = input("是否允许？(输入 'y' 允许，或者输入修改建议/拒绝原因): ")
-    return user_reply
+def cli_interaction_handler(request):
+    print(f"\n[⚠️ 警告] Agent 准备执行高危操作 `{request['tool_name']}`，参数为:")
+    print(json.dumps(request["args"], indent=2, ensure_ascii=False))
+    if request["is_delete_operation"]:
+        print("[提示] 检测到删除类操作，即使选择 session，也不会开启会话默认同意。")
+    print("请选择授权方式: session / only / no (默认: no)")
+    user_reply = input("> ").strip()
+    return user_reply or "no"
 
 # -----------------
 # 主循环
@@ -61,7 +65,8 @@ if __name__ == "__main__":
     print("=" * terminal_width)
     
     # 实例化持久的 Session 维持多轮上下文
-    session = Session(client, MODEL)
+    approval_handler = create_approval_handler(cli_interaction_handler)
+    session = Session(client, MODEL, interaction_handler=approval_handler)
     
     while True:
         try:
@@ -78,7 +83,7 @@ if __name__ == "__main__":
                 print("\n[系统] 接收到 DAG 任务图，开始调度执行...")
                 results = asyncio.run(session.execute_dag_async(
                     final_response, 
-                    interaction_handler=cli_interaction_handler
+                    interaction_handler=approval_handler
                 ))
                 print(f"\n✅ DAG 最终执行结果（JSON）：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
                 
