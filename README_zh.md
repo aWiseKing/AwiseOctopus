@@ -146,11 +146,37 @@ pip install streamlit
 streamlit run web_app.py
 ```
 
+### 桌面客户端（Flutter）
+
+仓库现已新增独立目录 `flutter_client/`，用于承载 Flutter 桌面客户端壳工程。
+
+当前阶段包含：
+- 桌面工作台 UI
+- 客户端版本 agent 状态编排层
+- 与现有 Python Agent 语义对齐的接口契约 DTO
+- Mock API 与 DAG / 审批 / 总结演示流程
+- 未来远程 API 的占位适配层
+
+当前阶段不包含：
+- Python HTTP / WebSocket 服务实现
+- Flutter 原生桌面 runner 自动生成文件
+
+由于当前机器未安装 Flutter SDK，仓库中先提交了 `lib/`、`test/`、契约文档和 `pubspec.yaml`。后续在具备 Flutter 环境的机器上执行：
+
+```bash
+cd flutter_client
+flutter pub get
+flutter create . --platforms=windows,linux,macos
+flutter test
+flutter run -d windows
+```
+
 ### 目录结构（高层）
 
 - `cli_rich/`：Rich + Click 命令行入口与子命令
 - `models/`：核心智能体、会话、DAG 执行、配置管理、工具与沙箱
 - `models/tools/`：工具库（动态注册）
+- `flutter_client/`：Flutter 桌面客户端壳、接口契约、Mock 交互与测试
 - `skills/`：专家技能库（Prompt/SOP）
 - `data/`：运行数据与持久化（含 SQLite 配置库、经验库、向量库等）
 - `libs/Everything_SDK/`：Everything SDK DLL

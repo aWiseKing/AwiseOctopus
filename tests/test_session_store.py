@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 
 from models.session_store import SessionStore
 
@@ -116,6 +117,34 @@ class TestSessionStore(unittest.TestCase):
                         {"role": "assistant", "content": "recovered"},
                     ],
                 )
+            finally:
+                store.close()
+
+    def test_get_prompt_history_path_is_stable_and_creates_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = f"{td}/session.db"
+            store = SessionStore(db_path=db_path)
+            try:
+                path1 = store.get_prompt_history_path("demo/session:1")
+                path2 = store.get_prompt_history_path("demo/session:1")
+
+                self.assertEqual(path1, path2)
+                self.assertTrue(path1.startswith(os.path.abspath(td)))
+                self.assertTrue(os.path.isdir(os.path.dirname(path1)))
+                self.assertTrue(os.path.basename(path1).startswith("prompt_"))
+                self.assertTrue(path1.endswith(".txt"))
+            finally:
+                store.close()
+
+    def test_get_prompt_history_path_is_isolated_per_session(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = f"{td}/session.db"
+            store = SessionStore(db_path=db_path)
+            try:
+                path1 = store.get_prompt_history_path("session-a")
+                path2 = store.get_prompt_history_path("session-b")
+
+                self.assertNotEqual(path1, path2)
             finally:
                 store.close()
 

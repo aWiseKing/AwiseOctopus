@@ -103,6 +103,31 @@ Legacy entrypoint is still available (compat):
 python app.py
 ```
 
+### Flutter Desktop Client
+
+The repository now contains a dedicated Flutter desktop client shell under `flutter_client/`.
+
+Current scope:
+- Desktop workspace UI
+- Client-side agent state orchestration
+- DTO contracts aligned with the current Python Agent semantics
+- Mock API flows for chat, DAG status, approval, and final summary
+- Placeholder remote API adapter for future backend integration
+
+Not included yet:
+- Python HTTP / WebSocket service implementation
+- Generated native desktop runner files
+
+Because Flutter SDK is not installed on the current machine, the repository currently includes the `lib/`, `test/`, docs, and `pubspec.yaml` structure first. On a machine with Flutter installed, run:
+
+```bash
+cd flutter_client
+flutter pub get
+flutter create . --platforms=windows,linux,macos
+flutter test
+flutter run -d windows
+```
+
 ## 🤝 Contributing
 
 We welcome everyone to experience `awise_agent` and contribute to its codebase! Whether you want to add new execution tools, design powerful expert skills, fix bugs, or improve documentation, your contributions are highly valued.

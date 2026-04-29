@@ -209,3 +209,13 @@ __marimo__/
 /.trae
 /.trae/documents
 data/config.db
+flutter_client/.dart_tool/
+flutter_client/.packages
+flutter_client/.flutter-plugins
+flutter_client/.flutter-plugins-dependencies
+flutter_client/.pub/
+flutter_client/build/
+flutter_client/coverage/
+flutter_client/windows/flutter/ephemeral/
+flutter_client/linux/flutter/ephemeral/
+flutter_client/macos/Flutter/ephemeral/

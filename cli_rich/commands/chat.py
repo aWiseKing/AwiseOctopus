@@ -70,6 +70,16 @@ def _build_info_content(ctx, store: SessionStore, config_mgr: ConfigManager, ses
     )
 
 
+def _create_prompt_session(
+    store: SessionStore,
+    session_id: str,
+    prompt_session_cls,
+    file_history_cls,
+):
+    history_path = store.get_prompt_history_path(session_id)
+    return prompt_session_cls(history=file_history_cls(history_path))
+
+
 @click.command("chat")
 @click.pass_obj
 def chat(ctx) -> None:
@@ -82,7 +92,7 @@ def chat(ctx) -> None:
             WordCompleter,
         )
         from prompt_toolkit.formatted_text import HTML
-        from prompt_toolkit.history import InMemoryHistory
+        from prompt_toolkit.history import FileHistory
     except ModuleNotFoundError as e:
         raise click.ClickException(
             "缺少依赖 prompt_toolkit，无法使用 chat 子命令。请安装 prompt_toolkit 后重试。"
@@ -142,7 +152,7 @@ def chat(ctx) -> None:
     chat_mode_completer = built_in_completer
     shell_mode_completer = merge_completers([built_in_completer, system_completer])
 
-    session = PromptSession(history=InMemoryHistory())
+    session = _create_prompt_session(store, session_id, PromptSession, FileHistory)
 
     while True:
         if current_mode == "chat":
@@ -236,6 +246,7 @@ def chat(ctx) -> None:
                     session_store=store,
                     interaction_handler=approval_handler,
                 )
+                session = _create_prompt_session(store, session_id, PromptSession, FileHistory)
                 info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                 console.print(Panel.fit(f"已创建并切换到 session: {sid}", border_style="green"))
                 continue
@@ -264,6 +275,7 @@ def chat(ctx) -> None:
                     session_store=store,
                     interaction_handler=approval_handler,
                 )
+                session = _create_prompt_session(store, session_id, PromptSession, FileHistory)
                 info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                 console.print(Panel.fit(f"已切换到 session: {sid}", border_style="green"))
                 continue

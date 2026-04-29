@@ -3,6 +3,7 @@ import json
 import sqlite3
 import datetime
 import threading
+import re
 
 
 class SessionStore:
@@ -15,6 +16,14 @@ class SessionStore:
 
     def _now(self) -> str:
         return datetime.datetime.now().isoformat()
+
+    def _get_data_dir(self) -> str:
+        return os.path.abspath(os.path.dirname(self.db_path))
+
+    def _sanitize_session_component(self, session_id: str) -> str:
+        value = str(session_id or "").strip() or "default"
+        sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+        return sanitized or "default"
 
     def ensure_schema(self) -> None:
         with self._lock:
@@ -172,6 +181,12 @@ class SessionStore:
             cur = self.conn.cursor()
             cur.execute("UPDATE sessions SET workspace = ? WHERE session_id = ?", (workspace, session_id))
             self.conn.commit()
+
+    def get_prompt_history_path(self, session_id: str) -> str:
+        history_dir = os.path.join(self._get_data_dir(), "history")
+        os.makedirs(history_dir, exist_ok=True)
+        safe_session_id = self._sanitize_session_component(session_id)
+        return os.path.join(history_dir, f"prompt_{safe_session_id}.txt")
 
     def list_sessions(self):
         with self._lock:
