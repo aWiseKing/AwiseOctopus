@@ -9,10 +9,17 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  desktop_multi_window: ^0.2.1
   flutter_riverpod: ^2.5.1
   go_router: ^14.2.0
   graphview: ^1.2.0
   http: ^1.2.2
+  launch_at_startup: ^0.5.1
+  screen_retriever: ^0.2.0
+  shared_preferences: ^2.3.2
+  webview_all: ^0.5.3
+  webview_flutter: ^4.13.0
+  webview_windows: ^0.4.0
   window_manager: ^0.4.3
   web_socket_channel: ^3.0.1
 
@@ -23,3 +30,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/live2d/hiyori_pro_zh/runtime/
+    - assets/live2d/hiyori_pro_zh/runtime/hiyori_pro_t11.2048/
+    - assets/live2d/hiyori_pro_zh/runtime/motion/
+    - assets/live2d/viewer/

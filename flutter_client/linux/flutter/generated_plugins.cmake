@@ -3,7 +3,9 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  desktop_multi_window
   screen_retriever_linux
+  webview_all_cef
   window_manager
 )
 
