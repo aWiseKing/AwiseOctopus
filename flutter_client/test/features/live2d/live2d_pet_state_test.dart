@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_client/features/live2d/application/live2d_pet_state.dart';
 
