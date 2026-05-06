@@ -2,14 +2,24 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:flutter_client/app/bootstrap.dart';
+import 'package:flutter_client/app/window_bootstrap.dart';
+import 'package:flutter_client/app/window_role.dart';
 
 void main() {
   testWidgets('app bootstrap renders desktop client shell', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
-      const ProviderScope(
-        child: AppBootstrap(),
+      ProviderScope(
+        overrides: <Override>[
+          appWindowLaunchContextProvider.overrideWithValue(
+            const AppWindowLaunchContext(
+              role: AppWindowRole.main,
+              autostart: false,
+            ),
+          ),
+        ],
+        child: const AppBootstrap(),
       ),
     );
     await tester.pumpAndSettle();

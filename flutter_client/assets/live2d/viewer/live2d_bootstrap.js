@@ -28,11 +28,20 @@
 
     const width = state.app.renderer.width;
     const height = state.app.renderer.height;
-    const scale = Math.min(width / 1100, height / 1500) * state.scale;
+    const bounds = state.model.getLocalBounds();
+    const availableWidth = width * 0.9;
+    const availableHeight = height * 0.9;
+    const scale = Math.min(
+      availableWidth / bounds.width,
+      availableHeight / bounds.height
+    ) * state.scale;
 
-    state.model.anchor.set(0.5, 1);
-    state.model.position.set(width * 0.54, height * 0.97);
     state.model.scale.set(scale);
+    const scaledBounds = state.model.getBounds();
+    state.model.position.set(
+      width * 0.5 - (scaledBounds.x + scaledBounds.width * 0.5 - state.model.x),
+      height * 0.52 - (scaledBounds.y + scaledBounds.height * 0.5 - state.model.y)
+    );
   }
 
   async function playMotion(group) {

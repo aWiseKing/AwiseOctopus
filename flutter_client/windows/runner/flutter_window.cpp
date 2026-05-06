@@ -4,6 +4,9 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "desktop_multi_window/desktop_multi_window_plugin.h"
+#include "screen_retriever_windows/screen_retriever_windows_plugin_c_api.h"
+#include "webview_windows/webview_windows_plugin.h"
+#include "window_manager/window_manager_plugin.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -29,8 +32,11 @@ bool FlutterWindow::OnCreate() {
   DesktopMultiWindowSetWindowCreatedCallback([](void* controller) {
     auto* flutter_view_controller =
         reinterpret_cast<flutter::FlutterViewController*>(controller);
-    auto* registry = flutter_view_controller->engine();
-    RegisterPlugins(registry);
+    auto* registrar = flutter_view_controller->engine()->GetRegistrarForPlugin(
+        "DesktopMultiWindowPlugin");
+    ScreenRetrieverWindowsPluginCApiRegisterWithRegistrar(registrar);
+    WebviewWindowsPluginRegisterWithRegistrar(registrar);
+    WindowManagerPluginRegisterWithRegistrar(registrar);
   });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 

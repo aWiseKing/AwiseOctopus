@@ -17,6 +17,7 @@ dependencies:
   launch_at_startup: ^0.5.1
   screen_retriever: ^0.2.0
   shared_preferences: ^2.3.2
+  path_provider: ^2.1.4
   webview_all: ^0.5.3
   webview_flutter: ^4.13.0
   webview_windows: ^0.4.0
