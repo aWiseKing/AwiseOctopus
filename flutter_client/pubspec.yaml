@@ -18,6 +18,7 @@ dependencies:
   screen_retriever: ^0.2.0
   shared_preferences: ^2.3.2
   path_provider: ^2.1.4
+  tray_manager: ^0.5.2
   webview_all: ^0.5.3
   webview_flutter: ^4.13.0
   webview_windows: ^0.4.0
@@ -36,3 +37,4 @@ flutter:
     - assets/live2d/hiyori_pro_zh/runtime/hiyori_pro_t11.2048/
     - assets/live2d/hiyori_pro_zh/runtime/motion/
     - assets/live2d/viewer/
+    - assets/tray/app_icon.ico
