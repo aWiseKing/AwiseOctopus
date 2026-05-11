@@ -221,6 +221,57 @@ class SessionStore:
             )
         return items
 
+    def list_client_messages(self, session_id: str) -> list[dict]:
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                SELECT id, message_json, created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY idx ASC
+                """,
+                (session_id,),
+            )
+            rows = cur.fetchall()
+
+        items = []
+        for row_id, raw, created_at in rows:
+            if not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(msg, dict):
+                continue
+
+            role = msg.get("role")
+            if role not in {"user", "assistant", "system"}:
+                continue
+            if role == "system":
+                continue
+            if msg.get("tool_calls"):
+                continue
+
+            content = msg.get("content")
+            if content is None:
+                continue
+            content = str(content)
+            if role == "assistant" and not content.strip():
+                continue
+
+            items.append(
+                {
+                    "id": f"m{row_id}",
+                    "role": role,
+                    "kind": "text" if role == "user" else "finalAnswer",
+                    "content": content,
+                    "createdAt": created_at or self._now(),
+                }
+            )
+        return items
+
     def _sanitize_messages(self, messages: list[dict]) -> list[dict]:
         sanitized = []
         pending_assistant = None

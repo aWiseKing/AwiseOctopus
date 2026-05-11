@@ -12,9 +12,11 @@ void main() {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final platform = _FakePlatformService();
       final tray = _FakeTrayService();
+      final api = _FakeAgentApiService();
       final controller = MainWindowController(
         platformService: platform,
         trayService: tray,
+        agentApiService: api,
       );
 
       await controller.initialize();
@@ -25,6 +27,7 @@ void main() {
       );
       expect(platform.preventCloseValues, <bool>[true]);
       expect(tray.ensureInitializedCount, 1);
+      expect(api.ensureStartedCount, 1);
     });
 
     test('loads persisted close behavior', () async {
@@ -73,10 +76,12 @@ void main() {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final platform = _FakePlatformService();
       final tray = _FakeTrayService();
+      final api = _FakeAgentApiService();
       var beforeExitCount = 0;
       final controller = MainWindowController(
         platformService: platform,
         trayService: tray,
+        agentApiService: api,
         onBeforeExit: () async {
           beforeExitCount++;
         },
@@ -88,6 +93,7 @@ void main() {
       await controller.handleCloseRequested();
 
       expect(tray.destroyCount, 1);
+      expect(api.stopCount, 1);
       expect(beforeExitCount, 1);
       expect(platform.preventCloseValues, <bool>[true, false]);
       expect(platform.destroyCount, 1);
@@ -170,5 +176,20 @@ class _FakeTrayService implements MainWindowTrayService {
     }
     initialized = false;
     destroyCount++;
+  }
+}
+
+class _FakeAgentApiService implements MainWindowAgentApiService {
+  int ensureStartedCount = 0;
+  int stopCount = 0;
+
+  @override
+  Future<void> ensureStarted() async {
+    ensureStartedCount++;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCount++;
   }
 }
