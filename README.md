@@ -97,6 +97,31 @@ Config check (no network/LLM calls):
 python -m cli_rich run --dry-run --prompt "hi"
 ```
 
+### One-click packages for users without Python
+
+Release builds use PyInstaller `onedir` bundles plus native packaging wrappers. The packaged app embeds the Python runtime and launches `AwiseOctopus CLI Chat` by default; first-run model setup uses the terminal wizard.
+
+Build the current platform package:
+
+```bash
+pip install -e ".[release]"
+python scripts/build_release.py --platform current
+```
+
+Artifacts are written to `dist/artifacts/`:
+
+- Windows: `AwiseOctopus-<version>-windows-x64-setup.exe` (falls back to portable zip when Inno Setup is unavailable)
+- macOS: `AwiseOctopus-<version>-macos-universal.dmg`
+- Linux: `AwiseOctopus-<version>-linux-x64.AppImage` and `awiseoctopus_<version>_amd64.deb` (falls back to AppDir tar.gz when AppImage tooling is unavailable)
+
+Smoke-test a packaged bundle:
+
+```bash
+python scripts/smoke_packaged_app.py dist/pyinstaller/AwiseOctopus
+```
+
+Runtime data is stored in the user's application data directory instead of the install directory.
+
 Legacy entrypoint is still available (compat):
 
 ```bash

@@ -2,6 +2,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,11 @@ class TestCliRichSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.tempdir = tempfile.TemporaryDirectory()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tempdir.cleanup()
 
     def run_cli(
         self,
@@ -27,6 +33,7 @@ class TestCliRichSmoke(unittest.TestCase):
         if env_overrides:
             env.update(env_overrides)
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        env["AWISEOCTOPUS_DATA_DIR"] = str(Path(self.tempdir.name) / "data")
         return subprocess.run(
             [sys.executable, "-m", "cli_rich", *args],
             cwd=str(self.repo_root),
@@ -52,6 +59,17 @@ class TestCliRichSmoke(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("0.1.0", result.stdout)
 
+    def test_env_set_list_defaults(self) -> None:
+        result = self.run_cli(["--no-color", "env", "set", "-l"])
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("系统默认设置键", result.stdout)
+        self.assertIn("api_key", result.stdout)
+        self.assertIn("base_url", result.stdout)
+        self.assertIn("MODEL", result.stdout)
+        self.assertIn("默认模型名称", result.stdout)
+        self.assertIn("常见 AI 模型厂商 base_url", result.stdout)
+        self.assertIn("DeepSeek", result.stdout)
+
     def test_run_dry_run_interaction(self) -> None:
         result = self.run_cli(
             [
@@ -73,4 +91,3 @@ class TestCliRichSmoke(unittest.TestCase):
         self.assertIn("http://example", result.stdout)
         self.assertIn("test-model", result.stdout)
         self.assertNotIn("test-key", result.stdout + result.stderr)
-

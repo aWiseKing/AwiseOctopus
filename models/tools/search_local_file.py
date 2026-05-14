@@ -1,13 +1,19 @@
-import os
 import sys
 import ctypes
 import threading
 from .registry import registry
+from ..runtime_paths import resource_path
 
 # 全局变量缓存 Everything SDK 库
 _everything_dll = None
 _dll_load_error = None
 _everything_lock = threading.Lock()
+
+
+def _everything_dll_path() -> str:
+    if sys.maxsize > 2**32:
+        return str(resource_path("libs", "Everything_SDK", "dll", "Everything64.dll"))
+    return str(resource_path("libs", "Everything_SDK", "dll", "Everything32.dll"))
 
 
 def _load_everything_dll():
@@ -17,11 +23,7 @@ def _load_everything_dll():
 
     try:
         # 获取 dll 路径
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if sys.maxsize > 2**32:
-            dll_path = os.path.join(base_dir, "libs", "Everything_SDK", "dll", "Everything64.dll")
-        else:
-            dll_path = os.path.join(base_dir, "libs", "Everything_SDK", "dll", "Everything32.dll")
+        dll_path = _everything_dll_path()
             
         if not os.path.exists(dll_path):
             _dll_load_error = f"未找到 Everything SDK 库文件: {dll_path}"

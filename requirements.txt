@@ -31,3 +31,4 @@ rich==13.7.1
 chromadb
 fastapi==0.124.0
 uvicorn==0.38.0
+prompt_toolkit

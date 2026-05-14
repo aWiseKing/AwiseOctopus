@@ -1,25 +1,36 @@
 import os
 import sqlite3
 
+from .runtime_paths import user_data_path
+
+
 class ConfigManager:
     _instance = None
 
-    def __new__(cls, db_path="data/config.db"):
-        if cls._instance is None:
+    @staticmethod
+    def _resolve_db_path(db_path: str | None = None) -> str:
+        if db_path is None:
+            return str(user_data_path("config.db"))
+        return os.path.abspath(os.path.expanduser(db_path))
+
+    def __new__(cls, db_path: str | None = None):
+        resolved_db_path = cls._resolve_db_path(db_path)
+        if cls._instance is None or getattr(cls._instance, "db_path", None) != resolved_db_path:
             cls._instance = super(ConfigManager, cls).__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, db_path="data/config.db"):
+    def __init__(self, db_path: str | None = None):
+        resolved_db_path = self._resolve_db_path(db_path)
         if self._initialized:
             return
             
         self._initialized = True
         
         # Ensure data directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(resolved_db_path), exist_ok=True)
         
-        self.db_path = db_path
+        self.db_path = resolved_db_path
         
         # Initialize SQLite
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)

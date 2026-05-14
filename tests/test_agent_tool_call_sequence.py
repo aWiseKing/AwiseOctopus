@@ -181,7 +181,7 @@ class TestAgentToolCallSequence(unittest.TestCase):
                             make_tool_call(
                                 "call_shell",
                                 "shell_command",
-                                '{"command":"git status","cwd":"..\\\\outside"}',
+                                '{"command":"git status","cwd":"../outside"}',
                             )
                         ]
                     )

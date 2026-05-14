@@ -5,9 +5,15 @@ import datetime
 import threading
 import re
 
+from .runtime_paths import user_data_path
+
 
 class SessionStore:
-    def __init__(self, db_path="data/session.db"):
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            db_path = str(user_data_path("session.db"))
+        else:
+            db_path = os.path.abspath(os.path.expanduser(db_path))
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.db_path = db_path
         self._lock = threading.Lock()

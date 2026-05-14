@@ -6,6 +6,7 @@ import click
 from rich.console import Console
 from rich.traceback import install
 
+from cli_rich.model_registry import get_active_api_key, infer_provider
 from models.config_manager import ConfigManager
 from . import __version__
 from .commands.chat import chat
@@ -32,8 +33,6 @@ def _resolve_config(
 ) -> tuple[str | None, str, str]:
     config_mgr = ConfigManager()
 
-    resolved_api_key = api_key or config_mgr.get("api_key") or os.getenv("api_key")
-
     resolved_base_url = (
         base_url
         or config_mgr.get("base_url")
@@ -41,6 +40,8 @@ def _resolve_config(
         or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
     resolved_model = model or config_mgr.get("MODEL") or os.getenv("MODEL") or "glm-5"
+    provider = infer_provider(base_url=resolved_base_url, model=resolved_model)
+    resolved_api_key = api_key or get_active_api_key(provider, config_mgr)
     return resolved_api_key, resolved_base_url, resolved_model
 
 
@@ -72,4 +73,3 @@ main.add_command(chat)
 main.add_command(run)
 main.add_command(env)
 main.add_command(session)
-

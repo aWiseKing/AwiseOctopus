@@ -1,0 +1,85 @@
+name: Build release artifacts
+
+on:
+  pull_request:
+    paths:
+      - "cli_rich/**"
+      - "models/**"
+      - "packaging/**"
+      - "scripts/**"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - ".github/workflows/release.yml"
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+          - platform: macos
+            os: macos-latest
+          - platform: linux
+            os: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install build tools on Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: choco install innosetup -y
+
+      - name: Install build tools on Linux
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse libfuse2 desktop-file-utils
+          curl -L -o appimagetool "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool
+          sudo mv appimagetool /usr/local/bin/appimagetool
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[release]"
+
+      - name: Run unit tests
+        shell: bash
+        run: python -m unittest discover -v
+
+      - name: Build release package
+        shell: bash
+        run: python scripts/build_release.py --platform current
+
+      - name: Smoke packaged app
+        shell: bash
+        run: python scripts/smoke_packaged_app.py dist/pyinstaller/AwiseOctopus
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AwiseOctopus-${{ matrix.platform }}
+          path: dist/artifacts/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/artifacts/*

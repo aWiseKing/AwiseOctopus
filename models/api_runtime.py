@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
+from cli_rich.model_registry import get_active_api_key, infer_provider
 from .config_manager import ConfigManager
 from .interaction import APPROVAL_CHOICES, create_approval_handler
 from .session import Session
@@ -87,6 +88,8 @@ class AgentApiRuntime:
             or os.getenv("base_url")
             or "https://dashscope.aliyuncs.com/compatible-mode/v1"
         )
+        provider = infer_provider(base_url=base_url, model=self._get_model())
+        api_key = get_active_api_key(provider, config_mgr)
         return OpenAI(api_key=api_key, base_url=base_url)
 
     def _get_model(self) -> str:

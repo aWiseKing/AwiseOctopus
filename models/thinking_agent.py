@@ -5,10 +5,11 @@ from .tools import registry
 from .experience_memory import ExperienceMemoryManager
 from .experience_agent import ExperienceAgent
 from .interaction import resolve_interaction_handler
+from .runtime_paths import resource_path
 
 def _search_skill(keyword):
     """根据关键字搜索 skills 目录，返回匹配的 skill.md 内容"""
-    skills_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skills")
+    skills_dir = str(resource_path("skills"))
     if not os.path.exists(skills_dir):
         return "未找到 skills 目录。"
     

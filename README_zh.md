@@ -25,12 +25,10 @@
    - 负责拆解用户的复杂请求、管理整体任务流，并评估执行结果。
    - 通过 `search_skill` 机制动态检索并加载最相关的专家技能。
    - 通过 `execute_subtask` 工具将拆解后的子任务分配给执行 Agent。
-
 2. **ExecutionAgent（执行 Agent / Worker）**：
    - 核心代码：`models/execution_agent.py`
    - 接收 Manager 的指令，根据当前上下文选择并调用可用的工具，精准执行任务。
    - 将客观的执行结果反馈给 Manager。
-
 3. **执行工具库（`models/tools/`）**：
    - `registry.py`：负责工具的管理和调度。
    - `python_eval.py`：安全、动态地执行 Python 代码。
@@ -38,7 +36,6 @@
    - `search_local_file.py`：基于 Everything SDK 的极速本地搜索。
    - `web_search.py`：集成搜索引擎功能。
    - `calc.py`：基础计算器。
-
 4. **技能库（`skills/`）**：
    - 存放专家知识库（例如：`data_analysis`、`daily-report-assistant`）。
    - 系统通过匹配文件夹名称、`description.txt` 及 `.md` 文件，动态找到与当前上下文最匹配的技能指南。
@@ -57,7 +54,6 @@
    git clone <REPO_URL>
    cd AwiseOctopus
    ```
-
 2. 安装所需依赖：
    - 推荐（安装 CLI 依赖更完整）：
      ```bash
@@ -75,6 +71,7 @@
 命令行参数 > SQLite 配置库（`data/config.db`）> 系统环境变量
 
 常用配置键：
+
 - `api_key`：API Key
 - `base_url`：OpenAI 兼容接口地址（默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`）
 - `MODEL`：模型名（默认 `glm-5`）
@@ -131,6 +128,35 @@ python -m cli_rich run --dry-run --prompt "hi"
 python -m cli_rich chat --api-key "<YOUR_API_KEY>" --base-url "https://dashscope.aliyuncs.com/compatible-mode/v1" --model "glm-5"
 ```
 
+### 一键部署包（无 Python 用户）
+
+项目提供 PyInstaller `onedir` 打包配置和三端原生安装器构建脚本。构建出的应用内置 Python 运行时，用户无需安装 Python，下载安装后双击即可进入 `AwiseOctopus CLI Chat`；首次缺少模型配置时会进入终端初始化向导。
+
+构建当前平台发布包：
+
+```bash
+pip install -e ".[release]"
+python scripts/build_release.py --platform current
+```
+
+构建产物输出在 `dist/artifacts/`：
+
+- Windows：`AwiseOctopus-<version>-windows-x64-setup.exe`，如未安装 Inno Setup 会退化输出 portable zip
+- macOS：`AwiseOctopus-<version>-macos-universal.dmg`
+- Linux：`AwiseOctopus-<version>-linux-x64.AppImage` 和 `awiseoctopus_<version>_amd64.deb`，缺少 AppImage 工具时会退化输出 AppDir tar.gz
+
+打包冒烟测试：
+
+```bash
+python scripts/smoke_packaged_app.py dist/pyinstaller/AwiseOctopus
+```
+
+运行数据会写入用户数据目录，而不是安装目录：
+
+- Windows：`%APPDATA%/AwiseOctopus`
+- macOS：`~/Library/Application Support/AwiseOctopus`
+- Linux：`~/.local/share/AwiseOctopus`
+
 旧入口仍保留可用（兼容）：
 
 ```bash
@@ -151,6 +177,7 @@ streamlit run web_app.py
 仓库现已新增独立目录 `flutter_client/`，用于承载 Flutter 桌面客户端壳工程。
 
 当前阶段包含：
+
 - 桌面工作台 UI
 - 客户端版本 agent 状态编排层
 - 与现有 Python Agent 语义对齐的接口契约 DTO
@@ -158,6 +185,7 @@ streamlit run web_app.py
 - 未来远程 API 的占位适配层
 
 当前阶段不包含：
+
 - Python HTTP / WebSocket 服务实现
 - Flutter 原生桌面 runner 自动生成文件
 

@@ -45,10 +45,14 @@ dependencies = [
   "prompt_toolkit",
 ]
 
+[project.optional-dependencies]
+release = [
+  "pyinstaller>=6.11",
+]
+
 [project.scripts]
 awiseoctopus = "cli_rich.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cli_rich*", "models*"]
-

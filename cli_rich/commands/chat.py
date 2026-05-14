@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import subprocess
 import sys
 import uuid
@@ -13,12 +14,21 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
+from cli_rich.model_registry import (
+    fetch_provider_models,
+    find_provider,
+    get_active_api_key,
+    get_model_providers,
+    get_provider_api_key,
+    infer_provider,
+    save_provider_api_key,
+)
 from models import DAGExecutor, ThinkingAgent
 from models.config_manager import ConfigManager
 from models.interaction import create_approval_handler
 from models.session_store import SessionStore
 
-from .run import _consume_run_stream, _ensure_api_key, _interaction_handler
+from .run import _consume_run_stream, _interaction_handler
 
 
 def _short_sid(sid: str | None) -> str:
@@ -51,6 +61,8 @@ def _get_session_name(store: SessionStore, session_id: str) -> str:
 
 
 def _build_info_content(ctx, store: SessionStore, config_mgr: ConfigManager, session_id: str, session_name: str) -> str:
+    provider = infer_provider(base_url=ctx.base_url, model=ctx.model)
+    provider_display = provider.name if provider else "自定义"
     ws = store.get_workspace(session_id)
     if ws:
         ws_display = f"[magenta]{ws}[/magenta]"
@@ -63,10 +75,11 @@ def _build_info_content(ctx, store: SessionStore, config_mgr: ConfigManager, ses
 
     return (
         f"模型: [green]{ctx.model}[/green]\n"
+        f"厂商: [green]{provider_display}[/green]\n"
         f"接口: [green]{ctx.base_url}[/green]\n"
         f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
         f"工作区: {ws_display}\n"
-        f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话。[/yellow]"
+        f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话；/model 切换模型。[/yellow]"
     )
 
 
@@ -78,6 +91,201 @@ def _create_prompt_session(
 ):
     history_path = store.get_prompt_history_path(session_id)
     return prompt_session_cls(history=file_history_cls(history_path))
+
+
+def _build_provider_table() -> Table:
+    table = Table(title="常见 AI 模型厂商")
+    table.add_column("ID", style="bold")
+    table.add_column("厂商")
+    table.add_column("base_url", style="cyan")
+    table.add_column("示例模型")
+    for provider in get_model_providers():
+        table.add_row(
+            provider.id,
+            provider.name,
+            provider.base_url,
+            ", ".join(provider.model_examples),
+        )
+    return table
+
+
+def _build_model_table(provider_name: str, models: list[str]) -> Table:
+    table = Table(title=f"{provider_name} 可用模型")
+    table.add_column("#", justify="right", style="cyan")
+    table.add_column("Model")
+    for idx, model in enumerate(models, start=1):
+        table.add_row(str(idx), model)
+    return table
+
+
+def _parse_model_command(prompt: str) -> list[str]:
+    try:
+        return shlex.split(prompt)
+    except ValueError:
+        return prompt.strip().split()
+
+
+def _prompt_provider(console, provider_ref: str | None):
+    if provider_ref:
+        provider = find_provider(provider_ref)
+        if provider:
+            return provider
+        console.print(Panel.fit(f"未知模型厂商: {provider_ref}", border_style="yellow"))
+
+    providers = get_model_providers()
+    console.print(_build_provider_table())
+    choices = [provider.id for provider in providers]
+    provider_id = Prompt.ask(
+        "请选择模型厂商 ID",
+        choices=choices,
+        default=providers[0].id,
+        show_choices=True,
+        console=console,
+    )
+    return find_provider(provider_id)
+
+
+def _has_model_setup(config_mgr: ConfigManager, ctx) -> bool:
+    configured_base_url = config_mgr.get("base_url")
+    configured_model = config_mgr.get("MODEL")
+    provider = infer_provider(base_url=configured_base_url or ctx.base_url, model=configured_model or ctx.model)
+    configured_api_key = get_active_api_key(provider, config_mgr, fallback_api_key=getattr(ctx, "api_key", None))
+    return bool(configured_base_url and configured_model and configured_api_key)
+
+
+def _run_first_use_model_setup(ctx, console, config_mgr: ConfigManager) -> None:
+    console.print(
+        Panel.fit(
+            "首次使用前需要配置 AI 模型。之后可随时用 /model switch 切换。",
+            title="模型初始化",
+            border_style="cyan",
+        )
+    )
+    provider = _prompt_provider(console, None)
+    if provider is None:
+        return
+
+    recorded_base_url = config_mgr.get("base_url")
+    default_base_url = (
+        recorded_base_url
+        if recorded_base_url and infer_provider(base_url=recorded_base_url, model=None) == provider
+        else provider.base_url
+    )
+    base_url = Prompt.ask(
+        "请输入 base_url，直接回车使用系统记录的厂商接口",
+        default=default_base_url,
+        show_default=True,
+        console=console,
+    ).strip()
+    if not base_url:
+        base_url = default_base_url
+
+    recorded_model = config_mgr.get("MODEL")
+    default_model = recorded_model or provider.default_model
+    model = Prompt.ask(
+        "请输入模型名称",
+        default=default_model,
+        show_default=True,
+        console=console,
+    ).strip()
+    if not model:
+        model = default_model
+
+    api_key = get_active_api_key(provider, config_mgr, fallback_api_key=getattr(ctx, "api_key", None))
+    if api_key:
+        console.print(f"[green]已读取 {provider.name} 已保存的 API Key。[/green]")
+    else:
+        api_key = Prompt.ask(
+            f"请输入 {provider.name} API Key",
+            password=True,
+            console=console,
+        ).strip()
+
+    ctx.base_url = base_url
+    ctx.model = model
+    ctx.api_key = api_key
+    config_mgr.set("base_url", base_url)
+    config_mgr.set("MODEL", model)
+    config_mgr.set("api_key", api_key)
+    save_provider_api_key(provider, config_mgr, api_key)
+    console.print(Panel.fit(f"已完成模型配置: {provider.name} / {model}", border_style="green"))
+
+
+def _ensure_provider_api_key(ctx, console, config_mgr: ConfigManager, provider) -> str:
+    api_key = get_provider_api_key(provider, config_mgr)
+    if api_key:
+        return api_key
+
+    api_key = Prompt.ask(
+        f"请输入 {provider.name} API Key",
+        password=True,
+        console=console,
+    )
+    save_provider_api_key(provider, config_mgr, api_key)
+    config_mgr.set("api_key", api_key)
+    ctx.api_key = api_key
+    return api_key
+
+
+def _ensure_current_model_api_key(ctx, console, config_mgr: ConfigManager) -> str:
+    provider = infer_provider(base_url=ctx.base_url, model=ctx.model)
+    api_key = get_active_api_key(provider, config_mgr, fallback_api_key=getattr(ctx, "api_key", None))
+    if api_key:
+        ctx.api_key = api_key
+        return api_key
+    if provider:
+        return _ensure_provider_api_key(ctx, console, config_mgr, provider)
+    api_key = Prompt.ask("请输入 api_key", password=True, console=console)
+    config_mgr.set("api_key", api_key)
+    ctx.api_key = api_key
+    return api_key
+
+
+def _select_model(console, provider, api_key: str, explicit_model: str | None) -> str | None:
+    if explicit_model:
+        return explicit_model
+
+    models: list[str] = []
+    try:
+        models = fetch_provider_models(provider, api_key)
+    except Exception as e:
+        console.print(
+            Panel.fit(
+                f"自动拉取模型列表失败：{e}\n已改用内置示例模型。",
+                border_style="yellow",
+            )
+        )
+
+    if not models:
+        models = list(provider.model_examples)
+
+    displayed_models = models[:50]
+    console.print(_build_model_table(provider.name, displayed_models))
+    answer = Prompt.ask(
+        "请选择模型序号或输入模型名",
+        default=provider.default_model if provider.default_model in displayed_models else displayed_models[0],
+        console=console,
+    ).strip()
+    if not answer:
+        return None
+    if answer.isdigit():
+        idx = int(answer)
+        if 1 <= idx <= len(displayed_models):
+            return displayed_models[idx - 1]
+        console.print(Panel.fit(f"模型序号超出范围: {answer}", border_style="yellow"))
+        return None
+    return answer
+
+
+def _apply_model_switch(ctx, config_mgr: ConfigManager, provider, model: str, api_key: str) -> OpenAI:
+    ctx.base_url = provider.base_url
+    ctx.model = model
+    ctx.api_key = api_key
+    config_mgr.set("base_url", provider.base_url)
+    config_mgr.set("MODEL", model)
+    config_mgr.set("api_key", api_key)
+    save_provider_api_key(provider, config_mgr, api_key)
+    return OpenAI(api_key=api_key, base_url=provider.base_url)
 
 
 @click.command("chat")
@@ -100,22 +308,17 @@ def chat(ctx) -> None:
     from rich.align import Align
 
     config_mgr = ConfigManager()
+    if sys.stdin.isatty() and not _has_model_setup(config_mgr, ctx):
+        _run_first_use_model_setup(ctx, console, config_mgr)
 
-    sword_shield_art = r"""
-        />_________________________________
-[########[]_________________________________>
-        \>
-
-       |`-._/\_.-`|
-       |    ||    |
-       |___o()o___|
-       |__((<>))__|
-       \   o\/o   /
-        \   ||   /
-         \  ||  /
-          '.||.'
-"""
-    api_key = _ensure_api_key(ctx)
+    awise_header = "\n".join(
+        [
+            "[bold white]Awise[/bold white][bold magenta]Octopus[/bold magenta] [bright_black]//[/bright_black] [bold cyan]Agent Command Deck[/bold cyan] [bright_black]v0.1[/bright_black]",
+            "[bright_cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bright_cyan]",
+            "[magenta]◆[/magenta] [cyan]Thinking Core[/cyan]  [bright_black]·[/bright_black]  [magenta]◆[/magenta] [cyan]DAG Executor[/cyan]  [bright_black]·[/bright_black]  [magenta]◆[/magenta] [cyan]Session Memory[/cyan]",
+        ]
+    )
+    api_key = ctx.api_key or "missing-api-key"
     client = OpenAI(api_key=api_key, base_url=ctx.base_url)
     store = SessionStore()
 
@@ -128,8 +331,16 @@ def chat(ctx) -> None:
 
     session_name = _get_session_name(store, session_id)
     info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
-    content = f"[bold cyan]{sword_shield_art}[/bold cyan]\n{info_content}"
-    console.print(Panel(content, title="[bold cyan]AwiseOctopus[/bold cyan]", border_style="cyan", expand=True))
+    content = f"{awise_header}\n\n{info_content}"
+    console.print(
+        Panel(
+            content,
+            title="[bold cyan]AwiseOctopus[/bold cyan]",
+            subtitle="[bright_black]ready[/bright_black]",
+            border_style="bright_cyan",
+            expand=True,
+        )
+    )
 
     approval_handler = create_approval_handler(
         lambda request: _interaction_handler(console, request),
@@ -146,7 +357,18 @@ def chat(ctx) -> None:
     current_mode = "chat"
 
     built_in_completer = WordCompleter(
-        ["/shell", "/chat", "/session", "exit"], ignore_case=True
+        [
+            "/shell",
+            "/chat",
+            "/session",
+            "/model",
+            "/model switch",
+            "/model list",
+            "/model fetch",
+            *[f"/model switch {provider.id}" for provider in get_model_providers()],
+            "exit",
+        ],
+        ignore_case=True,
     )
     system_completer = ExecutableCompleter()
     chat_mode_completer = built_in_completer
@@ -312,6 +534,80 @@ def chat(ctx) -> None:
             )
             continue
 
+        elif current_mode == "chat" and prompt.startswith("/model"):
+            parts = _parse_model_command(prompt)
+            sub = parts[1] if len(parts) >= 2 else ""
+
+            if sub in ("", "help"):
+                console.print(
+                    Panel.fit(
+                        "用法: /model list | /model fetch <provider> | /model switch [provider] [model]\n"
+                        "示例: /model switch deepseek deepseek-chat\n"
+                        "未提供 model 时会自动拉取该厂商模型列表供选择。",
+                        title="模型命令",
+                        border_style="cyan",
+                    )
+                )
+                continue
+
+            if sub in ("list", "ls", "providers"):
+                console.print(_build_provider_table())
+                continue
+
+            if sub == "fetch":
+                provider = _prompt_provider(console, parts[2] if len(parts) >= 3 else None)
+                if provider is None:
+                    continue
+                api_key = _ensure_provider_api_key(ctx, console, config_mgr, provider)
+                try:
+                    models = fetch_provider_models(provider, api_key)
+                except Exception as e:
+                    console.print(Panel.fit(f"拉取模型列表失败：{e}", border_style="red"))
+                    continue
+                if not models:
+                    console.print(Panel.fit("该接口未返回模型列表。", border_style="yellow"))
+                    continue
+                console.print(_build_model_table(provider.name, models[:100]))
+                continue
+
+            if sub == "switch":
+                provider = _prompt_provider(console, parts[2] if len(parts) >= 3 else None)
+                if provider is None:
+                    continue
+                api_key = _ensure_provider_api_key(ctx, console, config_mgr, provider)
+                selected_model = _select_model(
+                    console,
+                    provider,
+                    api_key,
+                    parts[3] if len(parts) >= 4 else None,
+                )
+                if not selected_model:
+                    continue
+                client = _apply_model_switch(ctx, config_mgr, provider, selected_model, api_key)
+                agent = ThinkingAgent(
+                    client,
+                    ctx.model,
+                    session_id=session_id,
+                    session_store=store,
+                    interaction_handler=approval_handler,
+                )
+                info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
+                console.print(
+                    Panel.fit(
+                        f"已切换模型: {provider.name} / {selected_model}",
+                        border_style="green",
+                    )
+                )
+                continue
+
+            console.print(
+                Panel.fit(
+                    "用法: /model list | /model fetch <provider> | /model switch [provider] [model]",
+                    border_style="yellow",
+                )
+            )
+            continue
+
         if current_mode == "shell":
             try:
                 if sys.platform == "win32":
@@ -328,6 +624,15 @@ def chat(ctx) -> None:
             except Exception as e:
                 console.print(Panel(f"执行命令时出错: {e}", title="[bold red]错误[/bold red]", border_style="red", expand=True))
         else:
+            api_key = _ensure_current_model_api_key(ctx, console, config_mgr)
+            client = OpenAI(api_key=api_key, base_url=ctx.base_url)
+            agent = ThinkingAgent(
+                client,
+                ctx.model,
+                session_id=session_id,
+                session_store=store,
+                interaction_handler=approval_handler,
+            )
             payload = _consume_run_stream(console, agent.run_stream(prompt), allow_interaction=True)
 
             if isinstance(payload, list):

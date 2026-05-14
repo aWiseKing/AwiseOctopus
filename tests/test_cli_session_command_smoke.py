@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,10 +10,16 @@ class TestCliSessionCommandSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.tempdir = tempfile.TemporaryDirectory()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tempdir.cleanup()
 
     def run_cli(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        env["AWISEOCTOPUS_DATA_DIR"] = str(Path(self.tempdir.name) / "data")
         return subprocess.run(
             [sys.executable, "-m", "cli_rich", *args],
             cwd=str(self.repo_root),
@@ -71,4 +78,3 @@ class TestCliSessionCommandSmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

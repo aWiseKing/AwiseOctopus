@@ -82,7 +82,7 @@
 
     window.PIXI = PIXI;
     const model = await PIXI.live2d.Live2DModel.from(
-      "/runtime/hiyori_pro_t11.model3.json"
+      "../hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json"
     );
 
     model.interactive = true;

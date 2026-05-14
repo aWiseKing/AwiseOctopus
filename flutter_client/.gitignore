@@ -11,3 +11,5 @@ coverage/
 windows/flutter/ephemeral/
 linux/flutter/ephemeral/
 macos/Flutter/ephemeral/
+!lib/
+!lib/**
