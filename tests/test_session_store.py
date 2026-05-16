@@ -80,6 +80,37 @@ class TestSessionStore(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_load_messages_preserves_reasoning_content(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = f"{td}/session.db"
+            store = SessionStore(db_path=db_path)
+            try:
+                session_id = "s-reasoning"
+
+                messages = [
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "thinking marker",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "search_skill", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "name": "search_skill", "content": "ok"},
+                ]
+                for m in messages:
+                    store.append_message(session_id, m)
+
+                loaded = store.load_messages(session_id)
+                self.assertEqual(loaded, messages)
+            finally:
+                store.close()
+
     def test_load_messages_filters_broken_tool_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = f"{td}/session.db"

@@ -16,8 +16,13 @@ def make_tool_call(call_id: str, name: str, arguments: str):
     )
 
 
-def make_message(*, content=None, tool_calls=None):
-    return SimpleNamespace(role="assistant", content=content, tool_calls=tool_calls)
+def make_message(*, content=None, tool_calls=None, reasoning_content=None):
+    return SimpleNamespace(
+        role="assistant",
+        content=content,
+        tool_calls=tool_calls,
+        reasoning_content=reasoning_content,
+    )
 
 
 def make_response(message):
@@ -114,6 +119,65 @@ class TestAgentToolCallSequence(unittest.TestCase):
                 if isinstance(msg, dict)
             )
         )
+
+    def test_thinking_agent_preserves_reasoning_content_between_tool_calls(self) -> None:
+        client = FakeClient(
+            [
+                make_response(
+                    make_message(
+                        reasoning_content="private chain marker",
+                        tool_calls=[make_tool_call("call_1", "search_skill", "{bad json")]
+                    )
+                ),
+                make_response(
+                    make_message(
+                        tool_calls=[
+                            make_tool_call(
+                                "call_2",
+                                "finish_task",
+                                '{"final_answer":"ok"}',
+                            )
+                        ]
+                    )
+                ),
+            ]
+        )
+        agent = ThinkingAgent(client, "fake-model")
+
+        with patch.object(agent.memory_manager, "search_experience", return_value=None), patch.object(
+            agent.experience_agent, "process_experience_stream", return_value=[]
+        ):
+            result = agent.run("hello")
+
+        self.assertEqual(result, "ok")
+        second_call_messages = client.chat.completions.calls[1]["messages"]
+        self.assertTrue(
+            any(
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and msg.get("reasoning_content") == "private chain marker"
+                for msg in second_call_messages
+            )
+        )
+
+    def test_thinking_agent_adds_reasoning_content_for_legacy_deepseek_history(self) -> None:
+        client = FakeClient([])
+        agent = ThinkingAgent(client, "deepseek-v4-flash")
+        agent.messages.append({"role": "assistant", "content": "legacy"})
+
+        messages = agent._messages_for_llm(None)
+
+        self.assertEqual(messages[-1]["reasoning_content"], "")
+        self.assertNotIn("reasoning_content", agent.messages[-1])
+
+    def test_thinking_agent_does_not_add_reasoning_content_for_other_models(self) -> None:
+        client = FakeClient([])
+        agent = ThinkingAgent(client, "fake-model")
+        agent.messages.append({"role": "assistant", "content": "legacy"})
+
+        messages = agent._messages_for_llm(None)
+
+        self.assertNotIn("reasoning_content", messages[-1])
 
     def test_execution_agent_appends_tool_message_after_execute_error(self) -> None:
         client = FakeClient(

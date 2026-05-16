@@ -5,6 +5,7 @@ from .tools import registry
 from .experience_memory import ExperienceMemoryManager
 from .experience_agent import ExperienceAgent
 from .interaction import resolve_interaction_handler
+from .message_utils import messages_for_model, normalize_assistant_message
 from .runtime_paths import resource_path
 
 def _search_skill(keyword):
@@ -253,34 +254,11 @@ class ThinkingAgent:
         )
 
     def _normalize_assistant_message(self, msg):
-        if isinstance(msg, dict):
-            return msg
-
-        role = getattr(msg, "role", None)
-        content = getattr(msg, "content", None)
-        tool_calls = getattr(msg, "tool_calls", None)
-
-        normalized = {"role": role or "assistant", "content": content}
-        if tool_calls:
-            calls = []
-            for tc in tool_calls:
-                function = getattr(tc, "function", None)
-                calls.append(
-                    {
-                        "id": getattr(tc, "id", None),
-                        "type": getattr(tc, "type", "function"),
-                        "function": {
-                            "name": getattr(function, "name", None),
-                            "arguments": getattr(function, "arguments", None),
-                        },
-                    }
-                )
-            normalized["tool_calls"] = calls
-        return normalized
+        return normalize_assistant_message(msg)
 
     def _messages_for_llm(self, injected_system_message: str | None):
         if not injected_system_message:
-            return self.messages
+            return messages_for_model(self.messages, self.model)
 
         base = list(self.messages)
         if base and isinstance(base[0], dict) and base[0].get("role") == "system":
@@ -288,9 +266,12 @@ class ThinkingAgent:
             merged_first["content"] = (
                 f"{base[0].get('content', '')}\n\n{injected_system_message}"
             ).strip()
-            return [merged_first, *base[1:]]
+            return messages_for_model([merged_first, *base[1:]], self.model)
 
-        return [{"role": "system", "content": injected_system_message}, *base]
+        return messages_for_model(
+            [{"role": "system", "content": injected_system_message}, *base],
+            self.model,
+        )
         
     def run_stream(self, user_request):
         yield ("RUNNING", "\n=== [思考Agent 启动] 开始分析任务 ===")

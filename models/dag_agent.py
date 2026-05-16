@@ -1,6 +1,7 @@
 import json
 import jsonschema
 from .tools import registry
+from .message_utils import messages_for_model, normalize_assistant_message
 
 def _validate_dag_tasks(tasks, schema):
     """
@@ -160,18 +161,20 @@ class DAGAgent:
         while True:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=messages_for_model(messages, self.model),
                 tools=self.tools_schema,
                 tool_choice="auto",
             )
             msg = response.choices[0].message
-            messages.append(msg)
+            msg_dict = normalize_assistant_message(msg)
+            messages.append(msg_dict)
             
-            if msg.tool_calls:
-                for tool_call in msg.tool_calls:
-                    name = getattr(tool_call.function, "name", None) or "unknown_tool"
+            if msg_dict.get("tool_calls"):
+                for tool_call in msg_dict.get("tool_calls", []):
+                    function = tool_call.get("function") or {}
+                    name = function.get("name") or "unknown_tool"
                     try:
-                        args = json.loads(tool_call.function.arguments)
+                        args = json.loads(function.get("arguments") or "{}")
                         
                         if name == "create_task":
                             tasks = args.get("tasks", [])
@@ -182,7 +185,7 @@ class DAGAgent:
                                 yield ("RUNNING", f"\n[DAG Agent 校验失败] DAG图存在错误: {error_msg}")
                                 self._append_tool_message(
                                     messages,
-                                    tool_call.id,
+                                    tool_call.get("id"),
                                     name,
                                     f"Failed to create task due to validation error: {error_msg}. 你必须修复这个 DAG 图的异常并重新调用 `create_task`。",
                                 )
@@ -198,7 +201,7 @@ class DAGAgent:
                             yield ("RUNNING", f"\n[DAG Agent 错误] 调用了未知工具: {name}")
                             self._append_tool_message(
                                 messages,
-                                tool_call.id,
+                                tool_call.get("id"),
                                 name,
                                 f"Error: Unknown tool '{name}'.",
                             )
@@ -206,11 +209,11 @@ class DAGAgent:
                         yield ("RUNNING", f"\n[DAG Agent 工具调用失败] {name}: {type(e).__name__}: {e}")
                         self._append_tool_message(
                             messages,
-                            tool_call.id,
+                            tool_call.get("id"),
                             name,
                             f"Tool call failed: {type(e).__name__}: {e}",
                         )
             else:
-                if msg.content:
-                    yield ("RUNNING", f"\n[DAG Agent 自言自语] {msg.content}")
+                if msg_dict.get("content"):
+                    yield ("RUNNING", f"\n[DAG Agent 自言自语] {msg_dict.get('content')}")
                     messages.append({"role": "user", "content": "请调用 create_task 工具输出 DAG 图。"})

@@ -4,6 +4,7 @@ from .tool_runtime import prepare_tool_args, resolve_workspace_for_session
 from .experience_memory import ExperienceMemoryManager
 from .experience_agent import ExperienceAgent
 from .interaction import resolve_interaction_handler
+from .message_utils import messages_for_model, normalize_assistant_message
 
 class ExecutionAgent:
     def __init__(self, client, model, session_id=None, interaction_handler=None):
@@ -77,19 +78,24 @@ class ExecutionAgent:
         process_log = []
         
         while True:
-            request_kwargs = {"model": self.model, "messages": messages}
+            request_kwargs = {
+                "model": self.model,
+                "messages": messages_for_model(messages, self.model),
+            }
             if registry.schemas:
                 request_kwargs["tools"] = registry.schemas
                 request_kwargs["tool_choice"] = "auto"
             response = self.client.chat.completions.create(**request_kwargs)
             msg = response.choices[0].message
+            msg_dict = normalize_assistant_message(msg)
             
-            if msg.tool_calls:
-                messages.append(msg)
-                for tool_call in msg.tool_calls:
-                    name = getattr(tool_call.function, "name", None) or "unknown_tool"
+            if msg_dict.get("tool_calls"):
+                messages.append(msg_dict)
+                for tool_call in msg_dict.get("tool_calls", []):
+                    function = tool_call.get("function") or {}
+                    name = function.get("name") or "unknown_tool"
                     try:
-                        args = json.loads(tool_call.function.arguments)
+                        args = json.loads(function.get("arguments") or "{}")
                         args = self._prepare_tool_args(name, args)
                         yield f"    - [执行Agent 调用技能] {name}({args})"
                         
@@ -125,14 +131,14 @@ class ExecutionAgent:
                         
                         yield f"    - [执行Agent 技能返回结果] {result}"
                         process_log.append(f"Call {name}({args}) -> Result: {result}")
-                        self._append_tool_message(messages, tool_call.id, name, result)
+                        self._append_tool_message(messages, tool_call.get("id"), name, result)
                     except Exception as e:
                         error_text = f"Tool call failed: {type(e).__name__}: {e}"
                         yield f"    - [执行Agent 技能调用失败] {name}: {type(e).__name__}: {e}"
                         process_log.append(f"Call {name} failed -> {error_text}")
-                        self._append_tool_message(messages, tool_call.id, name, error_text)
+                        self._append_tool_message(messages, tool_call.get("id"), name, error_text)
             else:
-                final_result = msg.content
+                final_result = msg_dict.get("content")
                 yield f"  <<< [执行Agent 完成] 结果反馈: {final_result}"
                 
                 # 记录经验
