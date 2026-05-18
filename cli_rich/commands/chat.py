@@ -24,8 +24,14 @@ from cli_rich.model_registry import (
     save_provider_api_key,
 )
 from models import DAGExecutor, ThinkingAgent
+from models.agent_errors import AgentOperationAbortedError, abort_message_for_user
 from models.config_manager import ConfigManager
 from models.interaction import create_approval_handler
+from models.personas import (
+    DEFAULT_PERSONA_NAME,
+    list_personas,
+    resolve_persona_name,
+)
 from models.session_store import SessionStore
 
 from .run import _consume_run_stream, _interaction_handler
@@ -63,6 +69,12 @@ def _get_session_name(store: SessionStore, session_id: str) -> str:
 def _build_info_content(ctx, store: SessionStore, config_mgr: ConfigManager, session_id: str, session_name: str) -> str:
     provider = infer_provider(base_url=ctx.base_url, model=ctx.model)
     provider_display = provider.name if provider else "自定义"
+    persona_name = resolve_persona_name(config_manager=config_mgr)
+    available_personas = list_personas()
+    if persona_name in available_personas:
+        persona_display = f"[green]{persona_name}[/green]"
+    else:
+        persona_display = f"[yellow]{persona_name}[/yellow] (未安装)"
     ws = store.get_workspace(session_id)
     if ws:
         ws_display = f"[magenta]{ws}[/magenta]"
@@ -77,9 +89,10 @@ def _build_info_content(ctx, store: SessionStore, config_mgr: ConfigManager, ses
         f"模型: [green]{ctx.model}[/green]\n"
         f"厂商: [green]{provider_display}[/green]\n"
         f"接口: [green]{ctx.base_url}[/green]\n"
+        f"人格: {persona_display}\n"
         f"会话: [green]{session_name}[/green] [cyan]{_short_sid(session_id)}[/cyan]\n"
         f"工作区: {ws_display}\n"
-        f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话；/model 切换模型。[/yellow]"
+        f"提示: [yellow]exit 退出；/shell 切换 Shell；/chat 切回 Chat；/session 管理会话；/model 切换模型；/persona 切换人格。[/yellow]"
     )
 
 
@@ -91,6 +104,24 @@ def _create_prompt_session(
 ):
     history_path = store.get_prompt_history_path(session_id)
     return prompt_session_cls(history=file_history_cls(history_path))
+
+
+def _build_agent(
+    client,
+    ctx,
+    store: SessionStore,
+    approval_handler,
+    session_id: str,
+    config_mgr: ConfigManager,
+):
+    return ThinkingAgent(
+        client,
+        ctx.model,
+        session_id=session_id,
+        session_store=store,
+        interaction_handler=approval_handler,
+        persona_name=resolve_persona_name(config_manager=config_mgr),
+    )
 
 
 def _build_provider_table() -> Table:
@@ -346,13 +377,7 @@ def chat(ctx) -> None:
         lambda request: _interaction_handler(console, request),
         session_id=session_id,
     )
-    agent = ThinkingAgent(
-        client,
-        ctx.model,
-        session_id=session_id,
-        session_store=store,
-        interaction_handler=approval_handler,
-    )
+    agent = _build_agent(client, ctx, store, approval_handler, session_id, config_mgr)
 
     current_mode = "chat"
 
@@ -362,9 +387,14 @@ def chat(ctx) -> None:
             "/chat",
             "/session",
             "/model",
+            "/persona",
+            "/persona list",
+            "/persona current",
+            "/persona use",
             "/model switch",
             "/model list",
             "/model fetch",
+            *[f"/persona use {persona_name}" for persona_name in list_personas()],
             *[f"/model switch {provider.id}" for provider in get_model_providers()],
             "exit",
         ],
@@ -461,12 +491,8 @@ def chat(ctx) -> None:
                     lambda request: _interaction_handler(console, request),
                     session_id=session_id,
                 )
-                agent = ThinkingAgent(
-                    client,
-                    ctx.model,
-                    session_id=session_id,
-                    session_store=store,
-                    interaction_handler=approval_handler,
+                agent = _build_agent(
+                    client, ctx, store, approval_handler, session_id, config_mgr
                 )
                 session = _create_prompt_session(store, session_id, PromptSession, FileHistory)
                 info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
@@ -490,12 +516,8 @@ def chat(ctx) -> None:
                     lambda request: _interaction_handler(console, request),
                     session_id=session_id,
                 )
-                agent = ThinkingAgent(
-                    client,
-                    ctx.model,
-                    session_id=session_id,
-                    session_store=store,
-                    interaction_handler=approval_handler,
+                agent = _build_agent(
+                    client, ctx, store, approval_handler, session_id, config_mgr
                 )
                 session = _create_prompt_session(store, session_id, PromptSession, FileHistory)
                 info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
@@ -511,12 +533,8 @@ def chat(ctx) -> None:
                     # Update info content
                     info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                     # Recreate agent to pick up the new workspace limit in system prompt
-                    agent = ThinkingAgent(
-                        client,
-                        ctx.model,
-                        session_id=session_id,
-                        session_store=store,
-                        interaction_handler=approval_handler,
+                    agent = _build_agent(
+                        client, ctx, store, approval_handler, session_id, config_mgr
                     )
                 else:
                     ws = store.get_workspace(session_id)
@@ -529,6 +547,81 @@ def chat(ctx) -> None:
             console.print(
                 Panel.fit(
                     "用法: /session list | /session current | /session new [name] | /session use <name|session_id> | /session workspace [path]",
+                    border_style="yellow",
+                )
+            )
+            continue
+
+        elif current_mode == "chat" and prompt.startswith("/persona"):
+            parts = prompt.strip().split()
+            sub = parts[1] if len(parts) >= 2 else ""
+
+            if sub in ("", "help"):
+                console.print(
+                    Panel.fit(
+                        "用法: /persona list | /persona current | /persona use <name>\n"
+                        f"默认人格: {DEFAULT_PERSONA_NAME}",
+                        title="人格命令",
+                        border_style="cyan",
+                    )
+                )
+                continue
+
+            if sub in ("list", "ls"):
+                personas = list_personas()
+                if not personas:
+                    console.print(Panel.fit("当前没有可用人格目录。", border_style="yellow"))
+                    continue
+                table = Table(title="可用人格")
+                table.add_column("Persona", style="bold")
+                current_persona = resolve_persona_name(config_manager=config_mgr)
+                for persona_name in personas:
+                    label = f"{persona_name} (当前)" if persona_name == current_persona else persona_name
+                    table.add_row(label)
+                console.print(table)
+                continue
+
+            if sub in ("current", "cur"):
+                current_persona = resolve_persona_name(config_manager=config_mgr)
+                console.print(
+                    Panel.fit(
+                        f"当前人格: {current_persona}",
+                        title="人格信息",
+                        border_style="cyan",
+                    )
+                )
+                continue
+
+            if sub == "use":
+                if len(parts) < 3:
+                    console.print(Panel.fit("用法: /persona use <name>", border_style="yellow"))
+                    continue
+                persona_name = parts[2].strip()
+                personas = list_personas()
+                if persona_name not in personas:
+                    available = ", ".join(personas) if personas else "无"
+                    console.print(
+                        Panel.fit(
+                            f"未知人格: {persona_name}\n可用人格: {available}",
+                            border_style="yellow",
+                        )
+                    )
+                    continue
+                config_mgr.set("persona_name", persona_name)
+                agent = _build_agent(
+                    client, ctx, store, approval_handler, session_id, config_mgr
+                )
+                info_content = _build_info_content(
+                    ctx, store, config_mgr, session_id, session_name
+                )
+                console.print(
+                    Panel.fit(f"已切换人格: {persona_name}", border_style="green")
+                )
+                continue
+
+            console.print(
+                Panel.fit(
+                    "用法: /persona list | /persona current | /persona use <name>",
                     border_style="yellow",
                 )
             )
@@ -584,12 +677,8 @@ def chat(ctx) -> None:
                 if not selected_model:
                     continue
                 client = _apply_model_switch(ctx, config_mgr, provider, selected_model, api_key)
-                agent = ThinkingAgent(
-                    client,
-                    ctx.model,
-                    session_id=session_id,
-                    session_store=store,
-                    interaction_handler=approval_handler,
+                agent = _build_agent(
+                    client, ctx, store, approval_handler, session_id, config_mgr
                 )
                 info_content = _build_info_content(ctx, store, config_mgr, session_id, session_name)
                 console.print(
@@ -624,36 +713,45 @@ def chat(ctx) -> None:
             except Exception as e:
                 console.print(Panel(f"执行命令时出错: {e}", title="[bold red]错误[/bold red]", border_style="red", expand=True))
         else:
-            api_key = _ensure_current_model_api_key(ctx, console, config_mgr)
-            client = OpenAI(api_key=api_key, base_url=ctx.base_url)
-            agent = ThinkingAgent(
-                client,
-                ctx.model,
-                session_id=session_id,
-                session_store=store,
-                interaction_handler=approval_handler,
-            )
-            payload = _consume_run_stream(console, agent.run_stream(prompt), allow_interaction=True)
-
-            if isinstance(payload, list):
-                console.rule("DAG 调度执行")
-                executor = DAGExecutor(
-                    payload,
-                    client,
-                    ctx.model,
-                    agent,
-                    interaction_handler=approval_handler,
+            try:
+                api_key = _ensure_current_model_api_key(ctx, console, config_mgr)
+                client = OpenAI(api_key=api_key, base_url=ctx.base_url)
+                agent = _build_agent(
+                    client, ctx, store, approval_handler, session_id, config_mgr
                 )
-                results = asyncio.run(executor.execute())
-                console.print(Panel(JSON.from_data(results), title="[bold cyan]DAG 最终执行结果[/bold cyan]", border_style="cyan", expand=True))
+                payload = _consume_run_stream(console, agent.run_stream(prompt), allow_interaction=True)
 
-                summary_text = ""
-                with Live(Panel(summary_text, title="[bold cyan]最终总结[/bold cyan]", border_style="cyan", expand=True), console=console, refresh_per_second=10) as live:
-                    for chunk in agent.summarize_dag_results_stream(prompt, results):
-                        summary_text += chunk
-                        live.update(Panel(summary_text, title="[bold cyan]最终总结[/bold cyan]", border_style="cyan", expand=True))
-            else:
-                console.print(Panel(str(payload), title="[bold cyan]最终答案[/bold cyan]", border_style="cyan", expand=True))
+                if isinstance(payload, list):
+                    console.rule("DAG 调度执行")
+                    executor = DAGExecutor(
+                        payload,
+                        client,
+                        ctx.model,
+                        agent,
+                        interaction_handler=approval_handler,
+                    )
+                    results = asyncio.run(executor.execute())
+                    console.print(Panel(JSON.from_data(results), title="[bold cyan]DAG 最终执行结果[/bold cyan]", border_style="cyan", expand=True))
+
+                    summary_text = ""
+                    with Live(Panel(summary_text, title="[bold cyan]最终总结[/bold cyan]", border_style="cyan", expand=True), console=console, refresh_per_second=10) as live:
+                        for chunk in agent.summarize_dag_results_stream(prompt, results):
+                            summary_text += chunk
+                            live.update(Panel(summary_text, title="[bold cyan]最终总结[/bold cyan]", border_style="cyan", expand=True))
+                else:
+                    console.print(Panel(str(payload), title="[bold cyan]最终答案[/bold cyan]", border_style="cyan", expand=True))
+            except AgentOperationAbortedError as e:
+                console.print(
+                    Panel.fit(
+                        abort_message_for_user(e),
+                        title="[bold yellow]Agent 已中止[/bold yellow]",
+                        border_style="yellow",
+                    )
+                )
+                console.print(
+                    Panel.fit("已返回对话输入状态，可继续输入新指令。", border_style="cyan")
+                )
+                continue
 
         console.print(
             Panel(

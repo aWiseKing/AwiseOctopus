@@ -57,6 +57,23 @@ class TestApiServer(unittest.TestCase):
             ["thinking_log", "final_answer"],
         )
 
+    def test_send_prompt_returns_fatal_abort_event(self):
+        response = self.client.post(
+            "/api/agent/send-prompt",
+            json={"sessionId": "s-http-abort", "prompt": "abort"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        events = [
+            json.loads(line)
+            for line in response.text.splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertTrue(events[-1]["fatal"])
+        self.assertTrue(events[-1]["shouldReturnToChat"])
+        self.assertEqual(events[-1]["errorCode"], "llm_rate_limited")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,10 +31,22 @@ class TestModelRegistry(unittest.TestCase):
         self.assertEqual(provider.base_url, "https://api.deepseek.com/v1")
         self.assertEqual(provider.api_key_config_key, "api_key.deepseek")
 
+    def test_find_provider_sensenova_by_id(self) -> None:
+        provider = find_provider("sensenova")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.base_url, "https://token.sensenova.cn/v1")
+        self.assertEqual(provider.default_model, "sensenova-6.7-flash-lite")
+        self.assertIn("sensenova-u1-fast", provider.model_examples)
+
     def test_infer_provider_by_base_url(self) -> None:
         provider = infer_provider(base_url="https://api.openai.com/v1/", model=None)
         self.assertIsNotNone(provider)
         self.assertEqual(provider.id, "openai")
+
+    def test_infer_provider_by_sensenova_model(self) -> None:
+        provider = infer_provider(model="sensenova-u1-fast")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.id, "sensenova")
 
     def test_parse_model_command_keeps_quoted_model(self) -> None:
         parts = _parse_model_command('/model switch openrouter "openai/gpt-5.1"')

@@ -11,6 +11,7 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from cli_rich.model_registry import get_active_api_key, infer_provider
+from .agent_errors import AgentOperationAbortedError, abort_message_for_user
 from .config_manager import ConfigManager
 from .interaction import APPROVAL_CHOICES, create_approval_handler
 from .session import Session
@@ -279,6 +280,16 @@ class AgentApiRuntime:
                         state.phase = "idle"
                         yield {"type": "final_answer", "text": str(payload)}
                     return
+        except AgentOperationAbortedError as exc:
+            state.phase = "idle"
+            state.thinking_gen = None
+            yield {
+                "type": "error",
+                "text": abort_message_for_user(exc),
+                "errorCode": exc.code,
+                "fatal": True,
+                "shouldReturnToChat": True,
+            }
         except Exception as exc:
             state.phase = "idle"
             state.thinking_gen = None
@@ -308,6 +319,16 @@ class AgentApiRuntime:
                 await state.event_queue.put({"type": "summary_chunk", "text": str(chunk)})
 
             await state.event_queue.put({"type": "final_answer", "text": summary_text})
+        except AgentOperationAbortedError as exc:
+            await state.event_queue.put(
+                {
+                    "type": "error",
+                    "text": abort_message_for_user(exc),
+                    "errorCode": exc.code,
+                    "fatal": True,
+                    "shouldReturnToChat": True,
+                }
+            )
         except Exception as exc:
             await state.event_queue.put({"type": "error", "text": f"{type(exc).__name__}: {exc}"})
         finally:

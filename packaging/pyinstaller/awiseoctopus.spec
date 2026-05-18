@@ -23,6 +23,7 @@ def tree_datas(source: str, target: str):
 
 datas = []
 datas += tree_datas("skills", "skills")
+datas += tree_datas("models/personas", "models/personas")
 datas += tree_datas("libs/Everything_SDK", "libs/Everything_SDK")
 datas += collect_data_files("chromadb")
 

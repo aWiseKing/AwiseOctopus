@@ -100,6 +100,7 @@ class DAGExecutor:
                 self.model,
                 session_id=getattr(self.thinking_agent, "session_id", None),
                 interaction_handler=self.interaction_handler,
+                persona_name=getattr(self.thinking_agent, "persona_name", None),
             )
             result = await worker.async_run(task_data.get('instruction', ''))
             

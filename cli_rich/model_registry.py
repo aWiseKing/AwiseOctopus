@@ -122,6 +122,20 @@ MODEL_PROVIDERS: tuple[ModelProvider, ...] = (
         model_examples=("hunyuan-turbos-latest", "hunyuan-lite"),
         note="兼容 OpenAI API。",
     ),
+    ModelProvider(
+        id="sensenova",
+        name="商汤科技 SenseNova AI",
+        base_url="https://token.sensenova.cn/v1",
+        api_key_config_key="api_key.sensenova",
+        api_key_env_var="SENSENOVA_API_KEY",
+        default_model="sensenova-6.7-flash-lite",
+        model_examples=(
+            "sensenova-6.7-flash-lite",
+            "sensenova-u1-fast",
+            "deepseek-v4-flash",
+        ),
+        note="兼容 OpenAI API。",
+    ),
 )
 
 

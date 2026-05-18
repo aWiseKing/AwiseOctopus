@@ -1,9 +1,13 @@
+import os
 from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from models.config_manager import ConfigManager
 from models.dag_agent import DAGAgent
+from models.experience_memory import ExperienceMemoryManager
+import models.experience_memory as experience_memory
 from models.execution_agent import ExecutionAgent
 from models.thinking_agent import ThinkingAgent
 
@@ -47,6 +51,51 @@ class FakeClient:
 
 
 class TestAgentToolCallSequence(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.env_patcher = patch.dict(
+            os.environ,
+            {"AWISEOCTOPUS_DATA_DIR": self.tempdir.name},
+            clear=False,
+        )
+        self.env_patcher.start()
+        self.original_chromadb = experience_memory.chromadb
+        experience_memory.chromadb = None
+        ConfigManager._instance = None
+        ExperienceMemoryManager._instance = None
+
+    def tearDown(self) -> None:
+        config = ConfigManager._instance
+        if config is not None and getattr(config, "conn", None) is not None:
+            config.conn.close()
+        ConfigManager._instance = None
+        instance = ExperienceMemoryManager._instance
+        if instance is not None and getattr(instance, "conn", None) is not None:
+            instance.conn.close()
+        ExperienceMemoryManager._instance = None
+        experience_memory.chromadb = self.original_chromadb
+        self.env_patcher.stop()
+        self.tempdir.cleanup()
+
+    def test_agents_load_system_prompts_from_persona_files(self) -> None:
+        client = FakeClient([])
+        with patch("models.thinking_agent.ExperienceMemoryManager"), patch(
+            "models.execution_agent.ExperienceMemoryManager"
+        ), patch("models.thinking_agent.ExperienceAgent"), patch(
+            "models.execution_agent.ExperienceAgent"
+        ):
+            thinking = ThinkingAgent(
+                client, "fake-model", persona_name="GongnengLove"
+            )
+            execution = ExecutionAgent(
+                client, "fake-model", persona_name="GongnengLove"
+            )
+            dag = DAGAgent(client, "fake-model", persona_name="GongnengLove")
+
+        self.assertIn("你是一个思考Agent（Manager）", thinking.system_prompt)
+        self.assertIn("你是一个执行Agent（Worker）", execution.system_prompt)
+        self.assertIn("你是一个专业的 DAG", dag.system_prompt)
+
     def test_thinking_agent_merges_injected_experience_into_single_system_message(self) -> None:
         client = FakeClient(
             [

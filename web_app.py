@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 from openai import OpenAI
+from models.agent_errors import AgentOperationAbortedError, abort_message_for_user
 from models.config_manager import ConfigManager
 from models.interaction import create_approval_handler
 
@@ -84,6 +85,9 @@ if "summary_text" not in st.session_state:
 if "summary_generator" not in st.session_state:
     st.session_state.summary_generator = None
 
+if "agent_error" not in st.session_state:
+    st.session_state.agent_error = None
+
 if "approval_handler" not in st.session_state:
     st.session_state.approval_handler = create_approval_handler(
         web_interaction_handler
@@ -114,6 +118,8 @@ for msg in st.session_state.messages:
                     st.code(msg["content"], language="text")
             elif msg.get("type") == "ask":
                 st.warning(f"**Agent 求助:**\n\n{msg['content']}")
+            elif msg.get("type") == "error":
+                st.error(f"**Agent 已中止:**\n\n{msg['content']}")
             elif msg.get("type") == "final":
                 st.success(f"**最终答案:**\n\n{msg['content']}")
             elif msg.get("type") == "dag_result":
@@ -202,8 +208,12 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                                     interaction_handler=app_session.approval_handler
                                 ))
                                 app_session.dag_results = results
+                            except AgentOperationAbortedError as e:
+                                app_session.agent_error = abort_message_for_user(e)
+                                app_session.dag_results = None
                             except Exception as e:
-                                app_session.dag_results = f"DAG执行错误: {e}"
+                                app_session.agent_error = f"DAG执行错误: {e}"
+                                app_session.dag_results = None
                             finally:
                                 app_session.dag_running = False
 
@@ -219,9 +229,21 @@ if prompt := st.chat_input("Please enter a question or reply to the agent's requ
                         st.session_state.messages.append({"role": "assistant", "type": "final", "content": payload})
                         st.session_state.agent_gen = None
                         break
+                elif status == "ERROR":
+                    st.session_state.messages.append({"role": "assistant", "type": "logs", "content": "\n".join(st.session_state.logs)})
+                    st.session_state.logs = []
+                    st.session_state.agent_error = str(payload)
+                    st.session_state.messages.append({"role": "assistant", "type": "error", "content": str(payload)})
+                    st.session_state.agent_gen = None
+                    break
                     
         except StopIteration as e:
             # 正常情况下生成器会在 FINISHED 状态返回，如果意外结束也清理状态
+            st.session_state.agent_gen = None
+        except AgentOperationAbortedError as e:
+            message = abort_message_for_user(e)
+            st.session_state.agent_error = message
+            st.session_state.messages.append({"role": "assistant", "type": "error", "content": message})
             st.session_state.agent_gen = None
 
 # -----------------
@@ -280,6 +302,18 @@ if st.session_state.dag_running or st.session_state.dag_results is not None:
         time.sleep(1.5)
         st.rerun()
 
+    if not st.session_state.dag_running and st.session_state.agent_error:
+        st.error(f"**Agent 已中止:**\n\n{st.session_state.agent_error}")
+        st.session_state.messages.append({
+            "role": "assistant",
+            "type": "error",
+            "content": st.session_state.agent_error,
+        })
+        st.session_state.agent_error = None
+        st.session_state.summary_generator = None
+        st.session_state.dag_results = None
+        st.rerun()
+
     # 处理 DAG 执行完成
     if not st.session_state.dag_running and st.session_state.dag_results is not None and not st.session_state.summary_generator:
         import json
@@ -332,6 +366,16 @@ if st.session_state.dag_running or st.session_state.dag_results is not None:
             import time
             time.sleep(0.1)
             st.rerun()
+        except AgentOperationAbortedError as e:
+            message = abort_message_for_user(e)
+            st.error(f"**Agent 已中止:**\n\n{message}")
+            st.session_state.messages.append({
+                "role": "assistant",
+                "type": "error",
+                "content": message,
+            })
+            st.session_state.summary_generator = None
+            st.session_state.dag_results = None
         except StopIteration:
             st.success("**所有任务已完成！**")
             st.session_state.messages.append({

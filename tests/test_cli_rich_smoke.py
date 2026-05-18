@@ -66,6 +66,7 @@ class TestCliRichSmoke(unittest.TestCase):
         self.assertIn("api_key", result.stdout)
         self.assertIn("base_url", result.stdout)
         self.assertIn("MODEL", result.stdout)
+        self.assertIn("persona_name", result.stdout)
         self.assertIn("默认模型名称", result.stdout)
         self.assertIn("常见 AI 模型厂商 base_url", result.stdout)
         self.assertIn("DeepSeek", result.stdout)

@@ -3,6 +3,7 @@ import asyncio
 import json
 from openai import OpenAI
 
+from models.agent_errors import AgentOperationAbortedError, abort_message_for_user
 from models.config_manager import ConfigManager
 from models.interaction import create_approval_handler
 # 从我们重构后的models包导入Session
@@ -77,19 +78,32 @@ if __name__ == "__main__":
             if not prompt.strip():
                 continue
             
-            final_response = session.think(prompt)
+            try:
+                final_response = session.think(prompt)
+            except AgentOperationAbortedError as e:
+                print(f"\n⚠️ {abort_message_for_user(e)}")
+                print("------------------------------------------")
+                continue
             
             if isinstance(final_response, list):
                 print("\n[系统] 接收到 DAG 任务图，开始调度执行...")
-                results = asyncio.run(session.execute_dag_async(
-                    final_response, 
-                    interaction_handler=approval_handler
-                ))
+                try:
+                    results = asyncio.run(session.execute_dag_async(
+                        final_response, 
+                        interaction_handler=approval_handler
+                    ))
+                except AgentOperationAbortedError as e:
+                    print(f"\n⚠️ {abort_message_for_user(e)}")
+                    print("------------------------------------------")
+                    continue
                 print(f"\n✅ DAG 最终执行结果（JSON）：\n{json.dumps(results, ensure_ascii=False, indent=2)}\n")
                 
                 print("\n[系统] 正在生成最终总结报告...\n")
-                for chunk in session.summarize_stream(prompt, results):
-                    print(chunk, end="", flush=True)
+                try:
+                    for chunk in session.summarize_stream(prompt, results):
+                        print(chunk, end="", flush=True)
+                except AgentOperationAbortedError as e:
+                    print(f"\n⚠️ {abort_message_for_user(e)}")
                 print("\n")
             else:
                 # 使用 encode/decode 避免终端打印生僻字符时报错

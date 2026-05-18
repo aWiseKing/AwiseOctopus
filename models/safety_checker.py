@@ -1,5 +1,6 @@
 import json
 import re
+from .agent_errors import AgentOperationAbortedError, create_chat_completion
 
 
 _SHELL_SAFE_PATTERNS = [
@@ -74,10 +75,12 @@ def is_action_safe(client, model, tool_name, args):
 只回复 "SAFE" 或 "UNSAFE"，不要包含任何其他内容。"""
 
     try:
-        response = client.chat.completions.create(
+        response = create_chat_completion(
+            client,
+            stage="安全审查阶段",
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0
+            temperature=0.0,
         )
         result = response.choices[0].message.content.strip().upper()
         if "SAFE" in result and "UNSAFE" not in result:
@@ -86,6 +89,9 @@ def is_action_safe(client, model, tool_name, args):
             return False
         else:
             return False
+    except AgentOperationAbortedError as e:
+        print(f"\n    [安全审查] 模型服务异常: {e}，默认要求人工确认。")
+        return False
     except Exception as e:
         print(f"\n    [安全审查] LLM 判断出错: {e}，默认要求人工确认。")
         return False

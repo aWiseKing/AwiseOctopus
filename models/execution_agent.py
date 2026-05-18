@@ -1,4 +1,6 @@
 import json
+from .agent_errors import create_chat_completion, raise_if_agent_abort_error
+from .personas import load_persona_prompt, resolve_persona_name
 from .tools import registry
 from .tool_runtime import prepare_tool_args, resolve_workspace_for_session
 from .experience_memory import ExperienceMemoryManager
@@ -7,10 +9,18 @@ from .interaction import resolve_interaction_handler
 from .message_utils import messages_for_model, normalize_assistant_message
 
 class ExecutionAgent:
-    def __init__(self, client, model, session_id=None, interaction_handler=None):
+    def __init__(
+        self,
+        client,
+        model,
+        session_id=None,
+        interaction_handler=None,
+        persona_name=None,
+    ):
         self.client = client
         self.model = model
         self.session_id = session_id
+        self.persona_name = resolve_persona_name(persona_name)
         self.interaction_handler = resolve_interaction_handler(
             interaction_handler, session_id=session_id
         )
@@ -19,21 +29,19 @@ class ExecutionAgent:
         
         self.workspace = None
         self.workspace = resolve_workspace_for_session(self.session_id)
-            
-        self.system_prompt = (
-            "你是一个执行Agent（Worker）。你的任务是利用手头的技能工具，精准地完成思考Agent交给你的具体任务指令。\n"
-            "遇到问题时，请自行分析并再次尝试。一旦你完成了任务，请直接用普通文本回答最终结果，不要返回额外的内容。\n"
-            "如果没有合适的工具，你可以直接回答；如果有合适的工具，请务必使用工具。\n"
-            "【特别注意】在执行直接操作宿主机PC的危险操作（如读写本地文件、修改系统设置）前，你必须先使用沙箱环境运行包含虚拟数据的测试代码，验证你的逻辑和语法。测试无误后，再执行真实的宿主机操作。"
-        )
-        
+
+        workspace_rule = ""
         if self.workspace:
             workspace_rule = (
                 f"\n\n【工作区限制】\n当前设定的会话工作区是：{self.workspace}\n"
                 "你的所有本地文件操作（包括读写、执行命令、代码生成等）都必须默认限制在此目录下进行。\n"
                 "除非用户明确要求操作工作区外的特定文件，否则你的操作绝对不能超出该目录范围。"
             )
-            self.system_prompt += workspace_rule
+        self.system_prompt = load_persona_prompt(
+            "execution_agent",
+            persona_name=self.persona_name,
+            workspace_rule=workspace_rule,
+        )
 
     def _append_tool_message(self, messages, tool_call_id, name, content) -> None:
         messages.append(
@@ -85,7 +93,11 @@ class ExecutionAgent:
             if registry.schemas:
                 request_kwargs["tools"] = registry.schemas
                 request_kwargs["tool_choice"] = "auto"
-            response = self.client.chat.completions.create(**request_kwargs)
+            response = create_chat_completion(
+                self.client,
+                stage="执行阶段",
+                **request_kwargs,
+            )
             msg = response.choices[0].message
             msg_dict = normalize_assistant_message(msg)
             
@@ -133,6 +145,7 @@ class ExecutionAgent:
                         process_log.append(f"Call {name}({args}) -> Result: {result}")
                         self._append_tool_message(messages, tool_call.get("id"), name, result)
                     except Exception as e:
+                        raise_if_agent_abort_error(e)
                         error_text = f"Tool call failed: {type(e).__name__}: {e}"
                         yield f"    - [执行Agent 技能调用失败] {name}: {type(e).__name__}: {e}"
                         process_log.append(f"Call {name} failed -> {error_text}")

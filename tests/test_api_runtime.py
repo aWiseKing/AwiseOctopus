@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 
+from models.agent_errors import AgentOperationAbortedError
 from models.api_runtime import AgentApiRuntime, encode_ndjson
 from models.session_store import SessionStore
 
@@ -30,6 +31,24 @@ class FakeSession:
                 {"id": "approval-task", "instruction": "danger", "dependencies": []}
             ]
             return
+        if prompt == "dag-abort":
+            yield "RUNNING", "planning abort dag"
+            yield "FINISHED", [
+                {"id": "abort-task", "instruction": "abort work", "dependencies": []}
+            ]
+            return
+        if prompt == "summary-abort":
+            yield "RUNNING", "planning summary abort dag"
+            yield "FINISHED", [
+                {"id": "summary-task", "instruction": "summary work", "dependencies": []}
+            ]
+            return
+        if prompt == "abort":
+            yield "RUNNING", "before abort"
+            raise AgentOperationAbortedError(
+                "思考阶段 调用模型服务失败：请求频率超限或额度已耗尽。Agent 操作已中止，请回到对话框后重试，或调整模型/配额后继续。",
+                code="llm_rate_limited",
+            )
         if prompt == "boom":
             yield "RUNNING", "before boom"
             raise RuntimeError("boom")
@@ -54,9 +73,21 @@ class FakeSession:
                 {"command": "Remove-Item demo.txt"},
             )
             return {"approval-task": decision.decision}
+        if task_id == "abort-task":
+            raise AgentOperationAbortedError(
+                "执行阶段 调用模型服务失败：请求频率超限或额度已耗尽。Agent 操作已中止，请回到对话框后重试，或调整模型/配额后继续。",
+                code="llm_rate_limited",
+            )
+        if task_id == "summary-task":
+            return {"summary-task": "ok"}
         return {"task-1": "ok"}
 
     def summarize_stream(self, prompt, results):
+        if prompt == "summary-abort":
+            raise AgentOperationAbortedError(
+                "结果总结阶段 调用模型服务失败：请求频率超限或额度已耗尽。Agent 操作已中止，请回到对话框后重试，或调整模型/配额后继续。",
+                code="llm_rate_limited",
+            )
         yield "sum"
         yield "mary"
 
@@ -178,6 +209,44 @@ class TestAgentApiRuntime(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events[-1]["type"], "error")
         self.assertIn("RuntimeError: boom", events[-1]["text"])
+
+    async def test_abort_error_becomes_fatal_error_event(self):
+        events = await collect(
+            self.runtime.send_prompt_stream(session_id="s-abort", prompt="abort")
+        )
+
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertTrue(events[-1]["fatal"])
+        self.assertTrue(events[-1]["shouldReturnToChat"])
+        self.assertEqual(events[-1]["errorCode"], "llm_rate_limited")
+        self.assertIn("Agent 操作已中止", events[-1]["text"])
+
+    async def test_dag_abort_becomes_fatal_error_event(self):
+        events = await collect(
+            self.runtime.send_prompt_stream(session_id="s-dag-abort", prompt="dag-abort")
+        )
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["thinking_log", "dag_planned", "dag_status", "error"],
+        )
+        self.assertTrue(events[-1]["fatal"])
+        self.assertTrue(events[-1]["shouldReturnToChat"])
+
+    async def test_summary_abort_becomes_fatal_error_event(self):
+        events = await collect(
+            self.runtime.send_prompt_stream(
+                session_id="s-summary-abort",
+                prompt="summary-abort",
+            )
+        )
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["thinking_log", "dag_planned", "dag_status", "dag_result", "error"],
+        )
+        self.assertTrue(events[-1]["fatal"])
+        self.assertEqual(events[-1]["errorCode"], "llm_rate_limited")
 
 
 if __name__ == "__main__":

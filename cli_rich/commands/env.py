@@ -22,6 +22,11 @@ DEFAULT_CONFIG_KEYS = (
         "glm-5",
     ),
     (
+        "persona_name",
+        "当前启用的人格目录名；Agent 会从对应人格目录读取 system prompt。",
+        "GongnengLove",
+    ),
+    (
         "default_workspace",
         "默认工作目录；未指定 session 工作目录时使用。",
         "无",

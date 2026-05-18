@@ -12,6 +12,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from models import DAGExecutor, ThinkingAgent
+from models.agent_errors import AgentOperationAbortedError, abort_message_for_user
 from models.config_manager import ConfigManager
 from models.interaction import create_approval_handler
 from models.session_store import SessionStore
@@ -83,6 +84,9 @@ def _consume_run_stream(console, gen, *, allow_interaction: bool):
 
         if status == "FINISHED":
             return payload
+
+        if status == "ERROR":
+            raise AgentOperationAbortedError(str(payload))
 
         raise click.ClickException(f"未知状态: {status}")
 
@@ -178,7 +182,10 @@ def run(
         session_store=store,
         interaction_handler=approval_handler,
     )
-    payload = _consume_run_stream(console, agent.run_stream(text), allow_interaction=sys.stdin.isatty())
+    try:
+        payload = _consume_run_stream(console, agent.run_stream(text), allow_interaction=sys.stdin.isatty())
+    except AgentOperationAbortedError as e:
+        raise click.ClickException(abort_message_for_user(e)) from e
 
     if isinstance(payload, list):
         console.rule("DAG 调度执行")
@@ -189,13 +196,19 @@ def run(
             agent,
             interaction_handler=approval_handler,
         )
-        results = asyncio.run(executor.execute())
+        try:
+            results = asyncio.run(executor.execute())
+        except AgentOperationAbortedError as e:
+            raise click.ClickException(abort_message_for_user(e)) from e
         console.print(Panel.fit("DAG 最终执行结果", border_style="cyan"))
         console.print(JSON.from_data(results))
 
         console.rule("最终总结")
-        for chunk in agent.summarize_dag_results_stream(text, results):
-            console.print(chunk, end="")
+        try:
+            for chunk in agent.summarize_dag_results_stream(text, results):
+                console.print(chunk, end="")
+        except AgentOperationAbortedError as e:
+            raise click.ClickException(abort_message_for_user(e)) from e
         console.print()
         return
 
