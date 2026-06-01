@@ -1,5 +1,6 @@
 import json
 import re
+from .agent_errors import AgentOperationAbortedError, create_chat_completion
 from .experience_memory import ExperienceMemoryManager
 
 class ExperienceAgent:
@@ -48,12 +49,17 @@ class ExperienceAgent:
             f"原始过程日志：\n{process_log}"
         )
         try:
-            response = self.client.chat.completions.create(
+            response = create_chat_completion(
+                self.client,
+                stage="经验提炼阶段",
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3
+                temperature=0.3,
             )
             return response.choices[0].message.content.strip()
+        except AgentOperationAbortedError as e:
+            print(f"[经验总结 Agent] 提炼过程已跳过: {e}")
+            return str(process_log)[:500] + "...(模型服务异常，已跳过提炼)"
         except Exception as e:
             print(f"[经验总结 Agent] 提炼过程日志失败: {e}")
             # 如果提炼失败，则截断返回
@@ -76,11 +82,13 @@ class ExperienceAgent:
             "请直接回复这个浮点数，不要输出任何其他内容，也不要包含 <think> 标签或其他标签。"
         )
         try:
-            response = self.client.chat.completions.create(
+            response = create_chat_completion(
+                self.client,
+                stage="经验评估阶段",
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=10
+                max_tokens=10,
             )
             raw = response.choices[0].message.content or ""
             score = self._extract_score(raw)
@@ -91,11 +99,14 @@ class ExperienceAgent:
                 return 0.5
 
             return max(0.0, min(1.0, float(score)))
+        except AgentOperationAbortedError as e:
+            print(f"\n[经验总结 Agent] 评估已跳过，默认给予 0.5 分: {e}")
+            return 0.5
         except Exception as e:
             print(f"\n[经验总结 Agent] 评估失败，默认给予 0.5 分: {e}")
             return 0.5
 
-    def process_experience_stream(self, task_type, instruction, process_log, result):
+    def process_experience_stream(self, task_type, instruction, process_log, result, session_id=None):
         """流式处理并记录经验，返回日志状态"""
         yield f"[经验总结 Agent] 正在提炼执行过程..."
         
@@ -108,6 +119,8 @@ class ExperienceAgent:
         
         yield f"[经验总结 Agent] 正在保存经验数据..."
         # 3. 保存经验
-        self.memory_manager.add_experience(task_type, instruction, distilled_log, result, score)
+        self.memory_manager.add_experience(
+            task_type, instruction, distilled_log, result, score, session_id=session_id
+        )
         
         yield f"[经验总结 Agent] 经验已记录 (得分: {score})"

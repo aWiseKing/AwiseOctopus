@@ -5,6 +5,8 @@ import uuid
 import datetime
 from pathlib import Path
 
+from .runtime_paths import user_data_path
+
 try:
     import chromadb
 except ImportError:
@@ -13,27 +15,39 @@ except ImportError:
 class ExperienceMemoryManager:
     _instance = None
 
-    def __new__(cls, db_path="experience.db", chroma_path="experience_vector"):
-        if cls._instance is None:
+    @staticmethod
+    def _resolve_paths(db_path: str | None = None, chroma_path: str | None = None) -> tuple[str, str]:
+        resolved_db_path = str(user_data_path("experience.db")) if db_path is None else os.path.abspath(os.path.expanduser(db_path))
+        resolved_chroma_path = str(user_data_path("experience_vector", create_parent=False)) if chroma_path is None else os.path.abspath(os.path.expanduser(chroma_path))
+        return resolved_db_path, resolved_chroma_path
+
+    def __new__(cls, db_path: str | None = None, chroma_path: str | None = None):
+        resolved_db_path, resolved_chroma_path = cls._resolve_paths(db_path, chroma_path)
+        current_key = getattr(cls._instance, "_path_key", None) if cls._instance is not None else None
+        if cls._instance is None or current_key != (resolved_db_path, resolved_chroma_path):
             cls._instance = super(ExperienceMemoryManager, cls).__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, db_path="data/experience.db", chroma_path="data/experience_vector"):
+    def __init__(self, db_path: str | None = None, chroma_path: str | None = None):
+        resolved_db_path, resolved_chroma_path = self._resolve_paths(db_path, chroma_path)
         if self._initialized:
             return
             
         self._initialized = True
+        self._path_key = (resolved_db_path, resolved_chroma_path)
         
         # Ensure data directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(resolved_db_path), exist_ok=True)
+        os.makedirs(resolved_chroma_path, exist_ok=True)
         
-        self.db_path = db_path
-        self.chroma_path = chroma_path
+        self.db_path = resolved_db_path
+        self.chroma_path = resolved_chroma_path
         
         # Initialize SQLite
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._create_table()
+        self._migrate_table()
         
         # Initialize ChromaDB
         if chromadb:
@@ -59,7 +73,23 @@ class ExperienceMemoryManager:
         ''')
         self.conn.commit()
 
-    def add_experience(self, task_type, instruction, process_log, result, success_score):
+    def _migrate_table(self):
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA table_info(experiences)")
+        existing_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+
+        if "session_id" not in existing_cols:
+            cursor.execute("ALTER TABLE experiences ADD COLUMN session_id TEXT")
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_experiences_task_session_time
+            ON experiences(task_type, session_id, created_at)
+            """
+        )
+        self.conn.commit()
+
+    def add_experience(self, task_type, instruction, process_log, result, success_score, session_id=None):
         """记录任务经验，存储到 SQLite 和 ChromaDB"""
         exp_id = str(uuid.uuid4())
         created_at = datetime.datetime.now().isoformat()
@@ -68,29 +98,41 @@ class ExperienceMemoryManager:
         # 1. 存入 SQLite
         cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO experiences (id, task_type, instruction, process_log, result, success_score, weight, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (exp_id, task_type, instruction, str(process_log), str(result), float(success_score), weight, created_at))
+            INSERT INTO experiences (id, task_type, instruction, process_log, result, success_score, weight, created_at, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (exp_id, task_type, instruction, str(process_log), str(result), float(success_score), weight, created_at, session_id))
         self.conn.commit()
         
         # 2. 存入 ChromaDB
         if self.collection:
+            metadata = {"task_type": task_type}
+            if session_id is not None:
+                metadata["session_id"] = session_id
             self.collection.add(
                 documents=[instruction],
-                metadatas=[{"task_type": task_type}],
+                metadatas=[metadata],
                 ids=[exp_id]
             )
 
-    def search_experience(self, task_type, instruction, top_k=3):
+    def search_experience(self, task_type, instruction, top_k=3, session_id=None):
         """搜索历史经验，根据 weight 分为成功和失败两类"""
         if not self.collection:
             return ""
             
         # 1. 向量检索最相关的 instruction
+        where_conditions = [{"task_type": task_type}]
+        if session_id is not None:
+            where_conditions.append({"session_id": session_id})
+            
+        if len(where_conditions) > 1:
+            where = {"$and": where_conditions}
+        else:
+            where = where_conditions[0]
+
         results = self.collection.query(
             query_texts=[instruction],
             n_results=top_k * 2,
-            where={"task_type": task_type}
+            where=where
         )
          
         if not results['ids'] or not results['ids'][0]:
@@ -154,3 +196,9 @@ class ExperienceMemoryManager:
                 hint += f"  {i}. 任务: {exp['instruction']}\n     过程: {exp['process_log']}\n     结果: {exp['result']}\n"
                 
         return hint
+
+    def close(self):
+        try:
+            self.conn.close()
+        except Exception:
+            pass

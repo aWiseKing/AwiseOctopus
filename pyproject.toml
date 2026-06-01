@@ -40,13 +40,19 @@ dependencies = [
   "tzlocal==5.3.1",
   "rich==13.7.1",
   "chromadb",
+  "fastapi==0.124.0",
+  "uvicorn==0.38.0",
   "prompt_toolkit",
 ]
 
+[project.optional-dependencies]
+release = [
+  "pyinstaller>=6.11",
+]
+
 [project.scripts]
-awiseoctopus = "cli_rich.cli:main"
+awiseoctopus = "acli.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cli_rich*", "models*"]
-
+include = ["acli*", "models*"]

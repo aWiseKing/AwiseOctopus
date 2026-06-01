@@ -1,6 +1,9 @@
 import json
 import jsonschema
+from .agent_errors import create_chat_completion, raise_if_agent_abort_error
+from .personas import load_persona_prompt, resolve_persona_name
 from .tools import registry
+from .message_utils import messages_for_model, normalize_assistant_message
 
 def _validate_dag_tasks(tasks, schema):
     """
@@ -65,23 +68,16 @@ def _validate_dag_tasks(tasks, schema):
 
 
 class DAGAgent:
-    def __init__(self, client, model):
+    def __init__(self, client, model, persona_name=None):
         self.client = client
         self.model = model
+        self.persona_name = resolve_persona_name(persona_name)
         
         execution_tools_info = json.dumps(registry.schemas, ensure_ascii=False)
-        self.system_prompt = (
-            "你是一个专业的 DAG（有向无环图）任务架构师（DAG Agent）。\n"
-            "你的任务是将思考Agent（ThinkingAgent）传给你的【任务执行计划】转化为符合规范的 DAG 任务 JSON 数组。\n"
-            "在 DAG 图中，你需要将任务进行**细致的拆分**，支持两种任务节点类型：\n"
-            "  1. `type='tool'`：直接调用特定的执行工具。必须指定 `tool`（工具名称）和 `input`（工具参数）。\n"
-            "  2. `type='agent'`：将复杂的模糊指令委派给执行Agent处理。必须指定 `instruction`。\n"
-            "请优先将明确的操作拆分为 `type='tool'` 节点。当前可直接调用的执行工具（用于 type='tool'）如下：\n"
-            f"{execution_tools_info}\n"
-            "\n**【动态DAG调整（复盘机制）】**\n"
-            "如果思考Agent的计划中提到某任务执行后可能需要根据它的结果来决定后续任务如何进行，请将该任务的 `requires_review` 设为 true。\n"
-            "你必须调用 `create_task` 工具来输出最终的 DAG 图。\n"
-            "如果收到校验失败的反馈，你必须仔细检查错误信息并修复 DAG 的结构异常，重新调用 `create_task`。\n"
+        self.system_prompt = load_persona_prompt(
+            "dag_agent",
+            persona_name=self.persona_name,
+            execution_tools_info=execution_tools_info,
         )
         
         self.tools_schema = [
@@ -140,6 +136,16 @@ class DAGAgent:
             }
         ]
 
+    def _append_tool_message(self, messages, tool_call_id, name, content) -> None:
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": name,
+                "content": str(content),
+            }
+        )
+
     def generate_dag_stream(self, plan):
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -148,49 +154,64 @@ class DAGAgent:
         yield ("RUNNING", "\n=== [DAG Agent 启动] 开始转化为 DAG 任务图 ===")
         
         while True:
-            response = self.client.chat.completions.create(
+            response = create_chat_completion(
+                self.client,
+                stage="DAG 规划阶段",
                 model=self.model,
-                messages=messages,
-                tools=self.tools_schema
+                messages=messages_for_model(messages, self.model),
+                tools=self.tools_schema,
+                tool_choice="auto",
             )
             msg = response.choices[0].message
-            messages.append(msg)
+            msg_dict = normalize_assistant_message(msg)
+            messages.append(msg_dict)
             
-            if msg.tool_calls:
-                for tool_call in msg.tool_calls:
-                    name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
-                    
-                    if name == "create_task":
-                        tasks = args.get("tasks", [])
-                        create_task_schema = next((t["function"]["parameters"] for t in self.tools_schema if t["function"]["name"] == "create_task"), None)
+            if msg_dict.get("tool_calls"):
+                for tool_call in msg_dict.get("tool_calls", []):
+                    function = tool_call.get("function") or {}
+                    name = function.get("name") or "unknown_tool"
+                    try:
+                        args = json.loads(function.get("arguments") or "{}")
                         
-                        is_valid, error_msg = _validate_dag_tasks(tasks, create_task_schema)
-                        if not is_valid:
-                            yield ("RUNNING", f"\n[DAG Agent 校验失败] DAG图存在错误: {error_msg}")
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "name": name,
-                                "content": f"Failed to create task due to validation error: {error_msg}. 你必须修复这个 DAG 图的异常并重新调用 `create_task`。"
-                            })
-                            continue
+                        if name == "create_task":
+                            tasks = args.get("tasks", [])
+                            create_task_schema = next((t["function"]["parameters"] for t in self.tools_schema if t["function"]["name"] == "create_task"), None)
                             
-                        yield ("RUNNING", f"\n=== [DAG Agent 转换完成] 输出DAG任务图: 共 {len(tasks)} 个任务 ===")
-                        dag_json = json.dumps(tasks, ensure_ascii=False, indent=2)
-                        yield ("RUNNING", f"\n[DAG 任务图详情]:\n{dag_json}")
-                        
-                        yield ("FINISHED", tasks)
-                        return tasks
-                    else:
-                        yield ("RUNNING", f"\n[DAG Agent 错误] 调用了未知工具: {name}")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": name,
-                            "content": f"Error: Unknown tool '{name}'."
-                        })
+                            is_valid, error_msg = _validate_dag_tasks(tasks, create_task_schema)
+                            if not is_valid:
+                                yield ("RUNNING", f"\n[DAG Agent 校验失败] DAG图存在错误: {error_msg}")
+                                self._append_tool_message(
+                                    messages,
+                                    tool_call.get("id"),
+                                    name,
+                                    f"Failed to create task due to validation error: {error_msg}. 你必须修复这个 DAG 图的异常并重新调用 `create_task`。",
+                                )
+                                continue
+                                
+                            yield ("RUNNING", f"\n=== [DAG Agent 转换完成] 输出DAG任务图: 共 {len(tasks)} 个任务 ===")
+                            dag_json = json.dumps(tasks, ensure_ascii=False, indent=2)
+                            yield ("RUNNING", f"\n[DAG 任务图详情]:\n{dag_json}")
+                            
+                            yield ("FINISHED", tasks)
+                            return tasks
+                        else:
+                            yield ("RUNNING", f"\n[DAG Agent 错误] 调用了未知工具: {name}")
+                            self._append_tool_message(
+                                messages,
+                                tool_call.get("id"),
+                                name,
+                                f"Error: Unknown tool '{name}'.",
+                            )
+                    except Exception as e:
+                        raise_if_agent_abort_error(e)
+                        yield ("RUNNING", f"\n[DAG Agent 工具调用失败] {name}: {type(e).__name__}: {e}")
+                        self._append_tool_message(
+                            messages,
+                            tool_call.get("id"),
+                            name,
+                            f"Tool call failed: {type(e).__name__}: {e}",
+                        )
             else:
-                if msg.content:
-                    yield ("RUNNING", f"\n[DAG Agent 自言自语] {msg.content}")
+                if msg_dict.get("content"):
+                    yield ("RUNNING", f"\n[DAG Agent 自言自语] {msg_dict.get('content')}")
                     messages.append({"role": "user", "content": "请调用 create_task 工具输出 DAG 图。"})

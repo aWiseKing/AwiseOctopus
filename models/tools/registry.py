@@ -3,14 +3,22 @@ class SkillRegistry:
         self.skills = {}
         self.schemas = []
 
-    def register(self, name, description, parameters, requires_confirmation=False):
+    def register(
+        self,
+        name,
+        description,
+        parameters,
+        requires_confirmation=False,
+        action_kind=None,
+    ):
         """
         注册技能的装饰器
         """
         def decorator(func):
             self.skills[name] = {
                 "func": func,
-                "requires_confirmation": requires_confirmation
+                "requires_confirmation": requires_confirmation,
+                "action_kind": action_kind,
             }
             self.schemas.append({
                 "type": "function",

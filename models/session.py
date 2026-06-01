@@ -2,18 +2,37 @@ import uuid
 from .thinking_agent import ThinkingAgent
 from .dag_executor import DAGExecutor
 from .interaction import resolve_interaction_handler
+from .session_store import SessionStore
 
 class Session:
     """
     Session 类负责封装一个完整的 Agent 对话上下文，
     协调 ThinkingAgent 的思考规划、DAGExecutor 的异步执行，以及最终的结果总结。
     """
-    def __init__(self, client, model, session_id=None, interaction_handler=None):
+    def __init__(
+        self,
+        client,
+        model,
+        session_id=None,
+        interaction_handler=None,
+        persona_name=None,
+    ):
         self.session_id = session_id or str(uuid.uuid4())
         self.client = client
         self.model = model
-        self.interaction_handler = resolve_interaction_handler(interaction_handler)
-        self.agent = ThinkingAgent(client, model, interaction_handler=self.interaction_handler)
+        self.persona_name = persona_name
+        self.interaction_handler = resolve_interaction_handler(
+            interaction_handler, session_id=self.session_id
+        )
+        self.store = SessionStore()
+        self.agent = ThinkingAgent(
+            client,
+            model,
+            session_id=self.session_id,
+            session_store=self.store,
+            interaction_handler=self.interaction_handler,
+            persona_name=self.persona_name,
+        )
         
     def think_stream(self, prompt):
         """流式生成思考过程"""
