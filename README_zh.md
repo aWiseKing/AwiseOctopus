@@ -163,15 +163,6 @@ python scripts/smoke_packaged_app.py dist/pyinstaller/AwiseOctopus
 python app.py
 ```
 
-### Web 入口（Streamlit）
-
-仓库内包含一个 Streamlit 应用入口 `web_app.py`。如需体验：
-
-```bash
-pip install streamlit
-streamlit run web_app.py
-```
-
 ### 桌面客户端（Flutter）
 
 仓库现已新增独立目录 `flutter_client/`，用于承载 Flutter 桌面客户端壳工程。

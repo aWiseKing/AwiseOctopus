@@ -42,7 +42,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["streamlit"],
+    excludes=[],
     noarchive=False,
     optimize=0,
 )
