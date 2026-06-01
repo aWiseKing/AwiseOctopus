@@ -21,7 +21,7 @@ class TestCliSessionCommandSmoke(unittest.TestCase):
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env["AWISEOCTOPUS_DATA_DIR"] = str(Path(self.tempdir.name) / "data")
         return subprocess.run(
-            [sys.executable, "-m", "cli_rich", *args],
+            [sys.executable, "-m", "acli", *args],
             cwd=str(self.repo_root),
             env=env,
             capture_output=True,

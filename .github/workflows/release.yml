@@ -3,7 +3,7 @@ name: Build release artifacts
 on:
   pull_request:
     paths:
-      - "cli_rich/**"
+      - "acli/**"
       - "models/**"
       - "packaging/**"
       - "scripts/**"

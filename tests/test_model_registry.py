@@ -5,12 +5,12 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-from cli_rich.commands.chat import (
+from acli.commands.chat import (
     _has_model_setup,
     _parse_model_command,
     _run_first_use_model_setup,
 )
-from cli_rich.model_registry import find_provider, infer_provider
+from acli.model_registry import find_provider, infer_provider
 
 
 class _FakeConfigManager:
@@ -77,7 +77,7 @@ class TestModelRegistry(unittest.TestCase):
         config_mgr = _FakeConfigManager()
         console = Console(file=StringIO(), force_terminal=False, no_color=True)
         with patch(
-            "cli_rich.commands.chat.Prompt.ask",
+            "acli.commands.chat.Prompt.ask",
             side_effect=["deepseek", "", "deepseek-v4-pro", "secret"],
         ):
             _run_first_use_model_setup(ctx, console, config_mgr)

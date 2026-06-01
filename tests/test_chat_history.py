@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from cli_rich.commands.chat import _create_prompt_session
+from acli.commands.chat import _create_prompt_session
 from models.session_store import SessionStore
 
 

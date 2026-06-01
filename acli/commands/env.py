@@ -1,7 +1,7 @@
 import click
 from rich.table import Table
 
-from cli_rich.model_registry import get_model_providers
+from acli.model_registry import get_model_providers
 from models.config_manager import ConfigManager
 
 

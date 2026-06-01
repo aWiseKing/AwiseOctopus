@@ -6,7 +6,7 @@ import click
 from rich.console import Console
 from rich.traceback import install
 
-from cli_rich.model_registry import get_active_api_key, infer_provider
+from acli.model_registry import get_active_api_key, infer_provider
 from models.config_manager import ConfigManager
 from . import __version__
 from .commands.chat import chat
@@ -50,7 +50,7 @@ def _resolve_config(
 @click.option("--api-key", default=None)
 @click.option("--base-url", default=None)
 @click.option("--model", default=None)
-@click.version_option(__version__, "--version", prog_name="cli_rich")
+@click.version_option(__version__, "--version", prog_name="acli")
 @click.pass_context
 def main(
     ctx: click.Context,

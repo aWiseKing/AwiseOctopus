@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from cli_rich.cli import main
+from acli.cli import main
 
 
 def run() -> None:

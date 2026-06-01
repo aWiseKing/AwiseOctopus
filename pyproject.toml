@@ -51,8 +51,8 @@ release = [
 ]
 
 [project.scripts]
-awiseoctopus = "cli_rich.cli:main"
+awiseoctopus = "acli.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cli_rich*", "models*"]
+include = ["acli*", "models*"]

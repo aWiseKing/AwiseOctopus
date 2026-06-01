@@ -25,7 +25,7 @@ def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) 
 
 def version() -> str:
     sys.path.insert(0, str(ROOT))
-    from cli_rich import __version__
+    from acli import __version__
 
     return __version__
 

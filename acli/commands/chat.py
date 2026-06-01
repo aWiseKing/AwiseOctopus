@@ -14,7 +14,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from cli_rich.model_registry import (
+from acli.model_registry import (
     fetch_provider_models,
     find_provider,
     get_active_api_key,

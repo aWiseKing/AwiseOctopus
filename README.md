@@ -70,10 +70,10 @@ Our vision is to build an autonomous, highly extensible, and fault-tolerant agen
 
 ### Running the System
 
-Recommended: start the dual agent interactive system via `cli_rich`:
+Recommended: start the dual agent interactive system via `acli`:
 
 ```bash
-python -m cli_rich chat
+python -m acli chat
 ```
 
 Type your request in the terminal and watch the agents collaborate to solve it! Type `exit` to quit.
@@ -88,13 +88,13 @@ awiseoctopus chat
 One-shot execution (good for scripting):
 
 ```bash
-python -m cli_rich run --prompt "Hello, summarize my tasks for today"
+python -m acli run --prompt "Hello, summarize my tasks for today"
 ```
 
 Config check (no network/LLM calls):
 
 ```bash
-python -m cli_rich run --dry-run --prompt "hi"
+python -m acli run --dry-run --prompt "hi"
 ```
 
 ### One-click packages for users without Python

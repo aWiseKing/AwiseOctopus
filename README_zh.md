@@ -87,19 +87,19 @@ awiseoctopus env set MODEL "glm-5"
 未安装脚本入口时，也可以用模块方式执行：
 
 ```bash
-python -m cli_rich env set api_key "<YOUR_API_KEY>"
-python -m cli_rich env set base_url "https://dashscope.aliyuncs.com/compatible-mode/v1"
-python -m cli_rich env set MODEL "glm-5"
+python -m acli env set api_key "<YOUR_API_KEY>"
+python -m acli env set base_url "https://dashscope.aliyuncs.com/compatible-mode/v1"
+python -m acli env set MODEL "glm-5"
 ```
 
 也可以通过环境变量提供（键名与上面一致）。
 
 ### 运行系统
 
-推荐通过 `cli_rich` 启动双 Agent 交互式系统：
+推荐通过 `acli` 启动双 Agent 交互式系统：
 
 ```bash
-python -m cli_rich chat
+python -m acli chat
 ```
 
 在终端中输入你的需求，观察 Agent 如何协同工作为您解决问题！输入 `exit` 退出系统。
@@ -113,19 +113,19 @@ awiseoctopus chat
 单次执行（适合脚本化调用）：
 
 ```bash
-python -m cli_rich run --prompt "你好，帮我总结一下今天的工作计划"
+python -m acli run --prompt "你好，帮我总结一下今天的工作计划"
 ```
 
 配置自检（不触发网络/LLM）：
 
 ```bash
-python -m cli_rich run --dry-run --prompt "hi"
+python -m acli run --dry-run --prompt "hi"
 ```
 
 传入临时配置（不落库）：
 
 ```bash
-python -m cli_rich chat --api-key "<YOUR_API_KEY>" --base-url "https://dashscope.aliyuncs.com/compatible-mode/v1" --model "glm-5"
+python -m acli chat --api-key "<YOUR_API_KEY>" --base-url "https://dashscope.aliyuncs.com/compatible-mode/v1" --model "glm-5"
 ```
 
 ### 一键部署包（无 Python 用户）
@@ -192,7 +192,7 @@ flutter run -d windows
 
 ### 目录结构（高层）
 
-- `cli_rich/`：Rich + Click 命令行入口与子命令
+- `acli/`：Rich + Click 命令行入口与子命令
 - `models/`：核心智能体、会话、DAG 执行、配置管理、工具与沙箱
 - `models/tools/`：工具库（动态注册）
 - `flutter_client/`：Flutter 桌面客户端壳、接口契约、Mock 交互与测试

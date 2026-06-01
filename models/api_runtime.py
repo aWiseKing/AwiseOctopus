@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
-from cli_rich.model_registry import get_active_api_key, infer_provider
+from acli.model_registry import get_active_api_key, infer_provider
 from .agent_errors import AgentOperationAbortedError, abort_message_for_user
 from .config_manager import ConfigManager
 from .interaction import APPROVAL_CHOICES, create_approval_handler

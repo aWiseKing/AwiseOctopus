@@ -34,7 +34,7 @@ hiddenimports += collect_submodules("prompt_toolkit")
 
 
 a = Analysis(
-    [str(ROOT / "cli_rich" / "packaged_entry.py")],
+    [str(ROOT / "acli" / "packaged_entry.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
