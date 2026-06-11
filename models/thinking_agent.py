@@ -242,6 +242,37 @@ class ThinkingAgent:
             f"Tool call failed: {type(exc).__name__}: {exc}",
         )
 
+    def _refresh_short_term_session_summary(self) -> None:
+        if not self.session_id:
+            return
+        conversational = [
+            msg
+            for msg in self.messages
+            if isinstance(msg, dict)
+            and msg.get("role") in {"user", "assistant"}
+            and not msg.get("tool_calls")
+            and str(msg.get("content") or "").strip()
+        ]
+        if len(conversational) < 8:
+            return
+        recent = conversational[-12:]
+        lines = []
+        for msg in recent:
+            role = "用户" if msg.get("role") == "user" else "助手"
+            content = str(msg.get("content") or "").replace("\n", " ").strip()
+            if len(content) > 280:
+                content = content[:280].rstrip() + "..."
+            lines.append(f"{role}: {content}")
+        summary = "当前会话近期摘要：\n" + "\n".join(lines)
+        try:
+            self.memory_manager.upsert_session_summary(
+                session_id=self.session_id,
+                content=summary,
+                message_count=len(conversational),
+            )
+        except Exception:
+            pass
+
     def _normalize_assistant_message(self, msg):
         return normalize_assistant_message(msg)
 
@@ -264,18 +295,32 @@ class ThinkingAgent:
         
     def run_stream(self, user_request):
         yield ("RUNNING", "\n=== [思考Agent 启动] 开始分析任务 ===")
-        
-        # 搜索历史经验
-        hint = self.memory_manager.search_experience(
+
+        self._refresh_short_term_session_summary()
+        try:
+            self.memory_manager.upsert_task_working_set(
+                session_id=self.session_id,
+                task_type="thinking",
+                content=f"思考任务进行中：{user_request}",
+                status="active",
+            )
+        except Exception:
+            pass
+
+        hint = self.memory_manager.build_memory_context(
             "thinking", user_request, session_id=self.session_id
         )
+        if not hint:
+            hint = self.memory_manager.search_experience(
+                "thinking", user_request, session_id=self.session_id
+            )
         injected_system_message = None
         if hint:
-            yield ("RUNNING", "\n[思考Agent 经验记忆] 检索到相关历史经验，已注入上下文。")
+            yield ("RUNNING", "\n[思考Agent 多模式记忆] 检索到相关记忆，已注入上下文。")
             injected_system_message = (
-                "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
+                "〖系统注入的多模式记忆（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
                 f"{hint}\n"
-                "〖经验参考结束〗"
+                "〖记忆参考结束〗"
             )
 
 
@@ -341,6 +386,15 @@ class ThinkingAgent:
                         elif name == "submit_plan":
                             plan = args.get("plan", "")
                             yield ("RUNNING", f"\n=== [思考Agent 规划完成] 提交计划给 DAG Agent ===\n{plan}")
+                            try:
+                                self.memory_manager.upsert_task_working_set(
+                                    session_id=self.session_id,
+                                    task_type="thinking",
+                                    content=f"当前任务已规划，等待 DAG 执行。\n用户请求：{user_request}\n计划：{plan}",
+                                    status="planned",
+                                )
+                            except Exception:
+                                pass
                             
                             from .dag_agent import DAGAgent
                             dag_agent = DAGAgent(
@@ -397,6 +451,16 @@ class ThinkingAgent:
                                 session_id=self.session_id,
                             ):
                                 yield ("RUNNING", f"  -> {log_msg}")
+
+                            try:
+                                self.memory_manager.upsert_task_working_set(
+                                    session_id=self.session_id,
+                                    task_type="thinking",
+                                    content=f"思考任务已完成：{user_request}\n最终回答：{final_answer}",
+                                    status="completed",
+                                )
+                            except Exception:
+                                pass
                             
                             final_return_status = "FINISHED"
                             final_return_payload = final_answer
@@ -506,3 +570,12 @@ class ThinkingAgent:
             "role": "user",
             "content": f"系统通知：上一个任务的DAG执行结果总结如下：\n{summary_text}\n请在后续对话中记住这些信息。"
         })
+        try:
+            self.memory_manager.upsert_task_working_set(
+                session_id=self.session_id,
+                task_type="thinking",
+                content=f"DAG 任务已完成。\n用户请求：{user_request}\n总结：{summary_text}",
+                status="completed",
+            )
+        except Exception:
+            pass

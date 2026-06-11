@@ -63,6 +63,48 @@ def create_app(runtime: AgentApiRuntime | None = None) -> FastAPI:
         except ApiNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/api/memory")
+    async def list_memory(
+        mode: str | None = None,
+        sessionId: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        try:
+            return await app.state.runtime.list_memories(
+                mode=mode,
+                session_id=sessionId,
+                limit=limit,
+            )
+        except ApiValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/api/memory")
+    async def clear_memory(
+        mode: str | None = None,
+        sessionId: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await app.state.runtime.clear_memories(
+                mode=mode,
+                session_id=sessionId,
+            )
+        except ApiValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/memory/{memory_id}")
+    async def get_memory(memory_id: str) -> dict[str, Any]:
+        try:
+            return await app.state.runtime.get_memory(memory_id)
+        except ApiNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.delete("/api/memory/{memory_id}")
+    async def delete_memory(memory_id: str) -> dict[str, Any]:
+        try:
+            return await app.state.runtime.delete_memory(memory_id)
+        except ApiNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.post("/api/agent/send-prompt")
     async def send_prompt(request: SendPromptRequest) -> StreamingResponse:
         try:

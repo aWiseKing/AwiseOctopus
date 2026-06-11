@@ -58,9 +58,9 @@ class ExecutionAgent:
         if hint:
             system_content = (
                 f"{system_content}\n\n"
-                "〖系统注入的历史经验（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
+                "〖系统注入的多模式记忆（仅供参考，如与用户最新指令冲突，以用户指令为准）〗\n"
                 f"{hint}\n"
-                "〖经验参考结束〗"
+                "〖记忆参考结束〗"
             )
         return [
             {"role": "system", "content": system_content},
@@ -73,13 +73,26 @@ class ExecutionAgent:
     def run_stream(self, instruction):
         yield f"  >>> [执行Agent 启动] 接收到子任务: {instruction}"
 
-        # 搜索历史经验
-        hint = self.memory_manager.search_experience(
+        try:
+            self.memory_manager.upsert_task_working_set(
+                session_id=self.session_id,
+                task_type="execution",
+                content=f"执行子任务进行中：{instruction}",
+                status="active",
+            )
+        except Exception:
+            pass
+
+        hint = self.memory_manager.build_memory_context(
             "execution", instruction, session_id=self.session_id
         )
+        if not hint:
+            hint = self.memory_manager.search_experience(
+                "execution", instruction, session_id=self.session_id
+            )
 
         if hint:
-            yield f"  >>> [执行Agent 经验记忆] 检索到相关历史经验，已注入上下文。"
+            yield f"  >>> [执行Agent 多模式记忆] 检索到相关记忆，已注入上下文。"
         messages = self._build_messages(instruction, hint=hint)
 
             
@@ -165,6 +178,16 @@ class ExecutionAgent:
                     session_id=self.session_id,
                 ):
                     yield f"      {log_msg}"
+
+                try:
+                    self.memory_manager.upsert_task_working_set(
+                        session_id=self.session_id,
+                        task_type="execution",
+                        content=f"执行子任务已完成：{instruction}\n结果：{final_result}",
+                        status="completed",
+                    )
+                except Exception:
+                    pass
                 
                 return final_result
 

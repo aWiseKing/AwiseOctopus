@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from api_server import create_app
 from models.api_runtime import AgentApiRuntime, NDJSON_MEDIA_TYPE
+from models.memory import MemoryManager
 from models.session_store import SessionStore
 from tests.test_api_runtime import FakeSession
 
@@ -14,10 +15,15 @@ class TestApiServer(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.store = SessionStore(db_path=f"{self.tempdir.name}/session.db")
+        self.memory_manager = MemoryManager(
+            db_path=f"{self.tempdir.name}/experience.db",
+            chroma_path=f"{self.tempdir.name}/vec",
+        )
         runtime = AgentApiRuntime(
             store=self.store,
             session_factory=FakeSession,
             client_factory=lambda: object(),
+            memory_manager=self.memory_manager,
             model="fake-model",
         )
         self.client = TestClient(create_app(runtime))
@@ -56,6 +62,28 @@ class TestApiServer(unittest.TestCase):
             [event["type"] for event in events],
             ["thinking_log", "final_answer"],
         )
+
+    def test_memory_endpoints(self):
+        memory_id = self.memory_manager.add_memory(
+            mode="long_term",
+            scope="project_context",
+            content="项目正在升级 memory。",
+            summary="memory 升级",
+            confidence=0.9,
+            importance=0.9,
+        )
+
+        listed = self.client.get("/api/memory?mode=long&limit=5")
+        shown = self.client.get(f"/api/memory/{memory_id}")
+        deleted = self.client.delete(f"/api/memory/{memory_id}")
+        missing = self.client.get(f"/api/memory/{memory_id}")
+
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()[0]["id"], memory_id)
+        self.assertEqual(shown.status_code, 200)
+        self.assertEqual(shown.json()["createdAt"], shown.json()["updatedAt"])
+        self.assertEqual(deleted.json(), {"deleted": True, "id": memory_id})
+        self.assertEqual(missing.status_code, 404)
 
     def test_send_prompt_returns_fatal_abort_event(self):
         response = self.client.post(

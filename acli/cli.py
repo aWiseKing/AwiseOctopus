@@ -13,6 +13,7 @@ from .commands.chat import chat
 from .commands.run import run
 from .commands.env import env
 from .commands.session import session
+from .commands.memory import memory
 
 
 class AppContext:
@@ -73,3 +74,4 @@ main.add_command(chat)
 main.add_command(run)
 main.add_command(env)
 main.add_command(session)
+main.add_command(memory)

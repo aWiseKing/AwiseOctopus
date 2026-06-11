@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -14,6 +16,7 @@ from acli.model_registry import get_active_api_key, infer_provider
 from .agent_errors import AgentOperationAbortedError, abort_message_for_user
 from .config_manager import ConfigManager
 from .interaction import APPROVAL_CHOICES, create_approval_handler
+from .memory import MemoryManager, memory_to_api, normalize_memory_mode
 from .session import Session
 from .session_store import SessionStore
 
@@ -68,6 +71,7 @@ class AgentApiRuntime:
         store: SessionStore | None = None,
         session_factory: Callable[..., Any] | None = None,
         client_factory: Callable[[], Any] | None = None,
+        memory_manager: MemoryManager | None = None,
         model: str | None = None,
     ) -> None:
         self.store = store or SessionStore()
@@ -77,9 +81,22 @@ class AgentApiRuntime:
         self._client: Any | None = None
         self._states: dict[str, ApiSessionState] = {}
         self._lock = asyncio.Lock()
+        self.memory_manager = memory_manager or self._create_memory_manager()
 
     def close(self) -> None:
         self.store.close()
+        self.memory_manager.close()
+
+    def _create_memory_manager(self) -> MemoryManager:
+        try:
+            return MemoryManager()
+        except sqlite3.OperationalError:
+            MemoryManager._instance = None
+            fallback_dir = tempfile.mkdtemp(prefix="awiseoctopus-memory-")
+            return MemoryManager(
+                db_path=os.path.join(fallback_dir, "experience.db"),
+                chroma_path=os.path.join(fallback_dir, "experience_vector"),
+            )
 
     def _create_openai_client(self) -> OpenAI:
         config_mgr = ConfigManager()
@@ -176,6 +193,58 @@ class AgentApiRuntime:
         if self.store.resolve_session(session_id) is None:
             raise ApiNotFoundError(f"Session not found: {session_id}")
         return self.store.list_client_messages(session_id)
+
+    async def list_memories(
+        self,
+        *,
+        mode: str | None = None,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        try:
+            normalized_mode = normalize_memory_mode(mode) if mode else None
+        except ValueError as exc:
+            raise ApiValidationError(str(exc)) from exc
+        resolved_session = None
+        if session_id:
+            resolved_session = self.store.resolve_session(session_id) or session_id
+        items = self.memory_manager.list_memories(
+            mode=normalized_mode,
+            session_id=resolved_session,
+            limit=limit,
+        )
+        return [memory_to_api(item) for item in items]
+
+    async def get_memory(self, memory_id: str) -> dict[str, Any]:
+        item = self.memory_manager.get_memory(memory_id)
+        if not item:
+            raise ApiNotFoundError(f"Memory not found: {memory_id}")
+        return memory_to_api(item)
+
+    async def delete_memory(self, memory_id: str) -> dict[str, Any]:
+        deleted = self.memory_manager.delete_memory(memory_id)
+        if not deleted:
+            raise ApiNotFoundError(f"Memory not found: {memory_id}")
+        return {"deleted": True, "id": memory_id}
+
+    async def clear_memories(
+        self,
+        *,
+        mode: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            normalized_mode = normalize_memory_mode(mode) if mode else None
+        except ValueError as exc:
+            raise ApiValidationError(str(exc)) from exc
+        resolved_session = None
+        if session_id:
+            resolved_session = self.store.resolve_session(session_id) or session_id
+        count = self.memory_manager.clear_memories(
+            mode=normalized_mode,
+            session_id=resolved_session,
+        )
+        return {"deleted": count}
 
     def _session_summary(self, item: dict[str, Any]) -> dict[str, Any]:
         session_id = item["session_id"]

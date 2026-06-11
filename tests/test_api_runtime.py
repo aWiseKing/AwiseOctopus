@@ -4,6 +4,7 @@ import unittest
 
 from models.agent_errors import AgentOperationAbortedError
 from models.api_runtime import AgentApiRuntime, encode_ndjson
+from models.memory import MemoryManager
 from models.session_store import SessionStore
 
 
@@ -100,10 +101,15 @@ class TestAgentApiRuntime(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.store = SessionStore(db_path=f"{self.tempdir.name}/session.db")
+        self.memory_manager = MemoryManager(
+            db_path=f"{self.tempdir.name}/experience.db",
+            chroma_path=f"{self.tempdir.name}/vec",
+        )
         self.runtime = AgentApiRuntime(
             store=self.store,
             session_factory=FakeSession,
             client_factory=lambda: object(),
+            memory_manager=self.memory_manager,
             model="fake-model",
         )
 
@@ -132,6 +138,24 @@ class TestAgentApiRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([message["content"] for message in messages], ["hello", "hi"])
         self.assertEqual(messages[0]["kind"], "text")
         self.assertEqual(messages[1]["kind"], "finalAnswer")
+
+    async def test_memory_management_runtime_methods(self):
+        memory_id = self.memory_manager.add_memory(
+            mode="long_term",
+            scope="user_preference",
+            content="用户偏好中文。",
+            summary="中文偏好",
+            confidence=0.9,
+            importance=0.9,
+        )
+
+        listed = await self.runtime.list_memories(mode="long", limit=10)
+        shown = await self.runtime.get_memory(memory_id)
+        deleted = await self.runtime.delete_memory(memory_id)
+
+        self.assertEqual(listed[0]["id"], memory_id)
+        self.assertEqual(shown["summary"], "中文偏好")
+        self.assertEqual(deleted, {"deleted": True, "id": memory_id})
 
     async def test_send_prompt_simple_answer_flow(self):
         events = await collect(
